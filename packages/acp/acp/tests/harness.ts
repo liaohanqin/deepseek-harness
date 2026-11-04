@@ -27,6 +27,10 @@ import * as JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-j
 import TokenMeter from '@deepseek-ai/dsh-token-meter'
 import * as AcpPlugin from '../src/index.ts'
 import type { AcpConfig } from '../src/index.ts'
+import type { SteerRequest, SteerResponse } from '../src/session.ts'
+
+/** The ACP steering extension method, absent from the SDK's typed table. */
+const STEERING_METHOD = '_session/steering'
 
 /** Scripted adapter for protocol tests. */
 class MockAdapter extends LlmAdapter {
@@ -191,6 +195,8 @@ interface BridgeClient {
   closeSession: NonNullable<AcpAgent['closeSession']>
   setSessionConfigOption: NonNullable<AcpAgent['setSessionConfigOption']>
   prompt: (params: PromptRequest, options?: SendRequestOptions) => Promise<PromptResponse>
+  /** `_session/steering`, the ACP extension the bridge advertises. */
+  steer: (params: SteerRequest, options?: SendRequestOptions) => Promise<SteerResponse>
   cancel: NonNullable<AcpAgent['cancel']>
 }
 
@@ -303,6 +309,7 @@ export async function makeBridgeHarness(options: {
     closeSession: params => client.request(methods.agent.session.close, params),
     setSessionConfigOption: params => client.request(methods.agent.session.setConfigOption, params),
     prompt: (params, options) => client.request(methods.agent.session.prompt, params, options),
+    steer: (params, options) => client.request(STEERING_METHOD, params, options),
     cancel: params => client.notify(methods.agent.session.cancel, params),
   }
   return harness

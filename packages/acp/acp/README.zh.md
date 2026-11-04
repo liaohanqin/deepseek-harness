@@ -72,6 +72,7 @@ kind: "package-reference"
 | `session/cancel` / `$/cancel_request` | 提示词所拥有的取消路径；没有进行中的 ACP 提示词时取消自主工作，未知会话 id 则为空操作。 |
 | `session/update` | 已提交 assistant 消息与 thought、通用工具生命周期、配置变化与上下文用量，按会话串行交付。 |
 | `session/request_permission` | 带一次性允许／拒绝选项的权限提示；你的客户端可以自动回答。 |
+| `_session/steering` | 扩展方法，通过 `_meta.steering.supported` 广告：把一条提示词并入正在运行的那一轮，返回 `{"outcome":"injected"}`。没有运行中的轮次时不消费任何内容，返回 `{"outcome":"promptRequired","reason":"noRunningTurn"}`，由客户端另行提交普通 `session/prompt`。 |
 
 会话列表和恢复允许普通 fork，包括含有 `parentSession` 的历史日志；`origin: subagent` 仍被排除。
 

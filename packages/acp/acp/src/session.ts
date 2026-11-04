@@ -3,6 +3,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import {
   RequestError,
+  type ContentBlock,
   type McpServer,
   type PromptRequest,
   type PromptResponse,
@@ -62,6 +63,32 @@ interface InflightPrompt {
   settlementStarted: boolean
   outputError: Error | undefined
   agentError: Error | undefined
+}
+
+/**
+ * Steering outcomes shared by the Claude, Codex, and pi ACP adapters.
+ *
+ * `injected` means the prompt joined the turn already running. `promptRequired`
+ * means no turn consumed it, so the caller should submit an ordinary
+ * `session/prompt`; this adapter never reports `startedNewTurn` because it
+ * leaves ownership of a new turn's lifecycle with the client.
+ */
+export type SteerOutcome = 'injected' | 'startedNewTurn' | 'promptRequired' | 'failed'
+
+/** Request `_session/steering`: an ACP extension, not a core method. */
+export interface SteerRequest {
+  /** Wire session identifier; branded at the handler boundary. */
+  sessionId: string
+  prompt: readonly ContentBlock[]
+  /** Steering options; `idleBehavior` selects what an idle session reports. */
+  _meta?: { steering?: { idleBehavior?: 'promptRequired' } }
+}
+
+/** Response `_session/steering`. */
+export interface SteerResponse {
+  outcome: SteerOutcome
+  /** Machine-readable detail, present when `outcome` is not `injected`. */
+  reason?: string
 }
 
 /** Standard invalid-parameter failure with protocol-safe detail. */
@@ -303,6 +330,62 @@ export class AcpSession {
     } finally {
       requestSignal?.removeEventListener('abort', onRequestAbort)
     }
+  }
+
+  /**
+   * Join one prompt to the turn this session is already running.
+   *
+   * Steering is an operation on an in-flight turn, never an alternative way to
+   * start one: with no live turn the content stays unconsumed and the caller
+   * submits an ordinary `session/prompt`, which keeps ownership of that turn's
+   * lifecycle. The steer therefore opens no admission slot and owns no
+   * settlement — its output arrives on the original prompt's update stream.
+   * @param params - `_session/steering` request for this session.
+   * @param imageEnabled - connection capability advertised at initialization.
+   * @param requestSignal - JSON-RPC request cancellation signal.
+   * @returns the shared steering outcome vocabulary.
+   */
+  async steer(
+    params: SteerRequest,
+    imageEnabled: boolean,
+    requestSignal?: AbortSignal,
+  ): Promise<SteerResponse> {
+    this.assertActive()
+    const inflight = this.inflight
+    if (inflight === undefined) return { outcome: 'promptRequired', reason: 'noRunningTurn' }
+    const selection = this.agent.model.current()
+    let content: Awaited<ReturnType<typeof admitAcpPrompt>>
+    try {
+      content = await admitAcpPrompt(
+        this.ctx,
+        selection,
+        params.prompt,
+        imageEnabled,
+        requestSignal ?? new AbortController().signal,
+      )
+    } catch (error: unknown) {
+      if (error instanceof AcpContentError) {
+        throw error.kind === 'invalid'
+          ? invalidParams(error.message)
+          : internalError(error.message)
+      }
+      throw error
+    }
+    // Admission can await image persistence, during which the turn may well have
+    // ended. Re-check rather than inject into a session that is no longer running.
+    if (this.inflight !== inflight || this.agent.status === 'idle') {
+      return { outcome: 'promptRequired', reason: 'noRunningTurn' }
+    }
+    const message = createUserMessage({
+      content,
+      source: { kind: 'user' },
+    })
+    try {
+      this.agent.steer(message)
+    } catch (error: unknown) {
+      throw internalError(`steering was not queued: ${errorChain(error)}`)
+    }
+    return { outcome: 'injected' }
   }
 
   /** Cancel the active prompt, or autonomous work when no ACP prompt exists. */

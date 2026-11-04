@@ -39,7 +39,7 @@ describe('automation-only ACP bridge', () => {
     harness = undefined
   })
 
-  it('advertises the standard automation controls without private metadata', async () => {
+  it('advertises the standard automation controls plus the steering extension', async () => {
     harness = await makeBridgeHarness()
     const response = await harness.client.initialize({
       protocolVersion: PROTOCOL_VERSION,
@@ -54,6 +54,8 @@ describe('automation-only ACP bridge', () => {
         promptCapabilities: { image: false, audio: false, embeddedContext: false },
         sessionCapabilities: { close: {}, list: {}, resume: {} },
       },
+      // Steering is an extension, so clients read it from top-level metadata.
+      _meta: { steering: { supported: true } },
       authMethods: [],
     })
   })

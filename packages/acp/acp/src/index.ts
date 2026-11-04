@@ -52,7 +52,29 @@ import type {} from '@deepseek-ai/dsh-user-approval'
 import { supportsAcpImagePrompts } from './content.ts'
 import { AcpMcpConfigError } from './mcp.ts'
 import { AcpModelConfigError } from './model-control.ts'
-import { AcpSession } from './session.ts'
+import { AcpSession, type SteerRequest, type SteerResponse } from './session.ts'
+
+/**
+ * `_session/steering` is the steering extension the Claude, Codex, and pi
+ * adapters ship; it is advertised as `_meta.steering.supported` rather than a
+ * core capability, so it stays outside the SDK's typed `methods` table.
+ */
+const STEERING_METHOD = '_session/steering'
+
+/**
+ * Validate the extension's raw params inside the handler rather than through a
+ * parser: the SDK parses params below its own error mapping, so a throw there
+ * would surface as a generic internal error instead of invalid params.
+ * @param params - untyped JSON-RPC params.
+ * @returns the same value narrowed to the steering request shape.
+ */
+function requireSteerRequest(params: unknown): SteerRequest {
+  if (typeof params !== 'object' || params === null) throw invalidParams('steering params must be an object')
+  const { sessionId, prompt } = params as Partial<SteerRequest>
+  if (typeof sessionId !== 'string') throw invalidParams('steering requires a sessionId')
+  if (!Array.isArray(prompt)) throw invalidParams('steering requires a prompt block array')
+  return params as SteerRequest
+}
 
 const DEFAULT_SESSION_LIST_PAGE_SIZE = 100
 
@@ -188,6 +210,10 @@ export function apply(ctx: Context, config: AcpConfig): void {
           promptCapabilities: { image: imagePromptEnabled, audio: false, embeddedContext: false },
           sessionCapabilities: { close: {}, list: {}, resume: {} },
         },
+        // Steering is an ACP extension, so clients discover it in the
+        // response's top-level `_meta` rather than in `agentCapabilities`
+        // (agent-shell, Claude and Codex all read it here).
+        _meta: { steering: { supported: true } },
         authMethods: [],
       }
     },
@@ -364,6 +390,23 @@ export function apply(ctx: Context, config: AcpConfig): void {
       return record.prompt(params, imagePromptEnabled, requestSignal)
     },
 
+    /**
+     * Steer one prompt into the turn this session is already running.
+     *
+     * Not part of the ACP spec: `_session/steering` is the extension the
+     * Claude, Codex, and pi adapters implement and advertise as
+     * `_meta.steering.supported`, so a prompt joins the running turn instead
+     * of queueing behind it. The returned `outcome` matches that vocabulary:
+     * `injected` when a live turn consumed it, and `promptRequired` when
+     * nothing was running — the caller then submits an ordinary
+     * `session/prompt` and keeps ownership of that turn's lifecycle.
+     */
+    async steer(params: SteerRequest, signal: AbortSignal): Promise<SteerResponse> {
+      assertOpen()
+      const record = requireSession(brandString<SessionId>(params.sessionId))
+      return record.steer(params, imagePromptEnabled, signal)
+    },
+
     cancel(params: CancelNotification): Promise<void> {
       sessions.get(brandString<SessionId>(params.sessionId))?.cancel()
       return Promise.resolve()
@@ -387,6 +430,13 @@ export function apply(ctx: Context, config: AcpConfig): void {
     .onRequest(methods.agent.session.close, ({ params }) => implementation.closeSession(params))
     .onRequest(methods.agent.session.setConfigOption, ({ params, signal }) => implementation.setSessionConfigOption(params, signal))
     .onRequest(methods.agent.session.prompt, ({ params, signal }) => implementation.prompt(params, signal))
+    .onRequest(
+      STEERING_METHOD,
+      // Identity parser: custom methods require one, but the SDK parses below
+      // its own error mapping, so validation stays in the handler.
+      (params: unknown) => params,
+      ({ params, signal }) => implementation.steer(requireSteerRequest(params), signal),
+    )
     .onNotification(methods.agent.session.cancel, ({ params }) => implementation.cancel(params))
   const connection = app.connect(stream)
   const conn: AgentContext = connection.client

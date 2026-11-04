@@ -72,6 +72,7 @@ One connection can run several sessions at once, each independent. The calls a c
 | `session/cancel` / `$/cancel_request` | The prompt-owned cancellation path; without an ACP prompt in flight it cancels autonomous work, while unknown session ids are no-ops. |
 | `session/update` | Committed assistant messages and thoughts, generic tool lifecycle, configuration changes, and context usage, serialized per session. |
 | `session/request_permission` | A permission prompt with one-shot allow/reject choices; your client can answer automatically. |
+| `_session/steering` | Extension, advertised as `_meta.steering.supported`: joins one prompt to the turn already running and returns `{"outcome":"injected"}`. With no live turn it consumes nothing and returns `{"outcome":"promptRequired","reason":"noRunningTurn"}`, leaving the client to submit an ordinary `session/prompt`. |
 
 Session listing and resume admit ordinary forks, including historical logs with `parentSession`; `origin: subagent` remains excluded.
 
