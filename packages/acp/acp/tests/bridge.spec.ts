@@ -1083,4 +1083,60 @@ describe('automation-only ACP bridge', () => {
     expect(harness.updates.some(update => update.sessionUpdate === 'available_commands_update')).toBe(false)
   })
 
+  it('advertises user-invocable skills alongside commands, marked in _meta', async () => {
+    harness = await makeBridgeHarness({ commands: true, skills: true })
+    harness.registerCommand('compact', 'Compact older conversation history')
+    harness.registerSkill('brainstorming', 'Explore user intent before creative work')
+    await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
+    await harness.client.newSession({ cwd: process.cwd(), mcpServers: [] })
+
+    await vi.waitFor(() => {
+      expect(harness!.updates.some(update => update.sessionUpdate === 'available_commands_update')).toBe(true)
+    })
+    const update = harness.updates.find(item => item.sessionUpdate === 'available_commands_update')
+    if (update?.sessionUpdate !== 'available_commands_update') throw new Error('expected commands update')
+    expect(update.availableCommands).toEqual([
+      { name: 'compact', description: 'Compact older conversation history' },
+      {
+        name: 'brainstorming',
+        description: 'Explore user intent before creative work',
+        _meta: { skill: true },
+      },
+    ])
+  })
+
+  it('lets a command win over a skill of the same name', async () => {
+    harness = await makeBridgeHarness({ commands: true, skills: true })
+    harness.registerCommand('plan', 'Enter or leave plan mode')
+    harness.registerSkill('plan', 'A skill that shares the command name')
+    await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
+    await harness.client.newSession({ cwd: process.cwd(), mcpServers: [] })
+
+    await vi.waitFor(() => {
+      expect(harness!.updates.some(update => update.sessionUpdate === 'available_commands_update')).toBe(true)
+    })
+    const update = harness.updates.find(item => item.sessionUpdate === 'available_commands_update')
+    if (update?.sessionUpdate !== 'available_commands_update') throw new Error('expected commands update')
+    expect(update.availableCommands).toEqual([
+      { name: 'plan', description: 'Enter or leave plan mode' },
+    ])
+  })
+
+  it('advertises skills when only the skill registry is composed', async () => {
+    harness = await makeBridgeHarness({ skills: true })
+    harness.registerSkill('brainstorming', 'Explore user intent before creative work')
+    await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
+    await harness.client.newSession({ cwd: process.cwd(), mcpServers: [] })
+
+    await vi.waitFor(() => {
+      expect(harness!.updates.some(update => update.sessionUpdate === 'available_commands_update')).toBe(true)
+    })
+    const update = harness.updates.find(item => item.sessionUpdate === 'available_commands_update')
+    if (update?.sessionUpdate !== 'available_commands_update') throw new Error('expected commands update')
+    expect(update.availableCommands).toEqual([{
+      name: 'brainstorming',
+      description: 'Explore user intent before creative work',
+      _meta: { skill: true },
+    }])
+  })
 })

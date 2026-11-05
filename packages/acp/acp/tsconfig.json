@@ -40,6 +40,12 @@
     },
     {
       "path": "../../interaction/user-approval"
+    },
+    {
+      "path": "../../session/working-directory"
+    },
+    {
+      "path": "../../skill/skill"
     }
   ]
 }

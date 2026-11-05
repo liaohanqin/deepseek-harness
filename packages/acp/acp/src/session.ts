@@ -15,6 +15,8 @@ import type { Agent, AgentHandle, AgentOptions, AgentStatus } from '@deepseek-ai
 import { installModelSelection } from '@deepseek-ai/dsh-agent'
 import { createUserMessage, errorChain, type UserMessage } from '@deepseek-ai/dsh-llm'
 import { type Session, type SessionEvent, type SessionId, type TurnEndReason } from '@deepseek-ai/dsh-session'
+// Side-effect type import: declaration-merges the `workingDirectory` service read below.
+import type {} from '@deepseek-ai/dsh-working-directory'
 import { AcpContentError, admitAcpPrompt } from './content.ts'
 import { turnEndToStopReason } from './codec.ts'
 import { mountAcpMcpServers } from './mcp.ts'
@@ -35,6 +37,26 @@ interface AvailableCommandMetadata {
 interface CommandRegistry {
   /** Effective descriptors for one agent, after scoped shadowing. */
   list(agent: Agent): readonly AvailableCommandMetadata[]
+}
+
+/** One skill reachable by the user-facing `/name` gesture. */
+interface SkillSummary {
+  /** Kebab-case skill name, addressed without the leading slash. */
+  readonly name: string
+  /** Short routing description shown by discovery consumers. */
+  readonly description: string
+  /** Resolved model and user invocation controls. */
+  readonly invocation: { readonly userInvocable: boolean }
+}
+
+/** Skill registry without depending on the skill package. */
+interface SkillRegistry {
+  /** Catalog for one viewing scope and workspace. */
+  list(options: {
+    readonly cwd: string
+    readonly scope: Agent
+    readonly signal: AbortSignal
+  }): Promise<readonly SkillSummary[]>
 }
 
 /** Subagent completion and teardown without depending on the subagent package. */
@@ -63,6 +85,13 @@ export interface CreateAcpSessionOptions extends AcpSessionBuildOptions {
 export interface ResumeAcpSessionOptions extends AcpSessionBuildOptions {
   sessionId: SessionId
 }
+
+/**
+ * Bound on workspace resolution and skill discovery for one catalog publish.
+ * Discovery reads the filesystem, so a wedged provider root must not stall the
+ * notification queue behind it.
+ */
+const COMMAND_DISCOVERY_TIMEOUT_MS = 10_000
 
 interface InflightPrompt {
   resolve: (reason: StopReason) => void
@@ -256,28 +285,68 @@ export class AcpSession {
    * Publish the effective `/command` catalog, then serialize its notification
    * without blocking execution updates.
    *
-   * The registry is optional: a composition without `@deepseek-ai/dsh-commands`
-   * advertises nothing rather than failing the session.
+   * User-invocable skills join the same list because `available_commands_update`
+   * is the only discovery channel ACP offers. They stay plain-text gestures: the
+   * host's pre-step boundary recognizes a leading `/name` and injects the skill
+   * body, so a pick needs no command execution. `_meta.skill` keeps the two
+   * apart for clients that care, and a command always wins a shared name —
+   * matching the web client, which adjudicates the line before it becomes a
+   * prompt.
+   *
+   * Both registries are optional: a composition without them advertises
+   * nothing rather than failing the session.
    */
   commandsChanged(): void {
     if (this.closing !== undefined) return
     const commands = this.ctx.get('commands') as CommandRegistry | undefined
-    if (commands === undefined) return
+    const skills = this.ctx.get('skills') as SkillRegistry | undefined
+    if (commands === undefined && skills === undefined) return
     const previous = this.outputTail
     this.outputTail = previous
-      .then(() => this.notify({
-        sessionId: this.agent.session.id,
-        update: {
-          sessionUpdate: 'available_commands_update',
-          availableCommands: commands.list(this.agent).map(command => ({
+      .then(async () => {
+        const availableCommands: {
+          name: string
+          description: string
+          input?: { hint: string }
+          _meta?: { skill: true }
+        }[] = []
+        const claimed = new Set<string>()
+        for (const command of commands?.list(this.agent) ?? []) {
+          claimed.add(command.name)
+          availableCommands.push({
             name: command.name,
             description: command.description,
             ...command.input === undefined
               ? {}
               : { input: { hint: command.input.hint } },
-          })),
-        },
-      }))
+          })
+        }
+        // The agent's workspace selects project skill roots, so discovery wants
+        // the live directory rather than the deployment default. A composition
+        // without `workingDirectory` falls back to the session's recorded cwd.
+        const workingDirectory = this.ctx.get('workingDirectory')
+        const cwd = workingDirectory === undefined
+          ? this.agent.session.header.cwd ?? process.cwd()
+          : await workingDirectory.ensure(this.agent, AbortSignal.timeout(COMMAND_DISCOVERY_TIMEOUT_MS))
+        const discovered = await skills?.list({
+          cwd,
+          scope: this.agent,
+          signal: AbortSignal.timeout(COMMAND_DISCOVERY_TIMEOUT_MS),
+        }) ?? []
+        for (const skill of discovered) {
+          if (!skill.invocation.userInvocable || claimed.has(skill.name)) continue
+          claimed.add(skill.name)
+          availableCommands.push({
+            name: skill.name,
+            description: skill.description,
+            _meta: { skill: true },
+          })
+        }
+        await this.notify({
+          sessionId: this.agent.session.id,
+          update: { sessionUpdate: 'available_commands_update', availableCommands },
+        })
+      })
       /* v8 ignore start -- the bridge notifier contains transport failure. */
       .catch((error: unknown) => {
         this.ctx.logger.warn(`acp: available-commands update failed: ${errorChain(error)}`)

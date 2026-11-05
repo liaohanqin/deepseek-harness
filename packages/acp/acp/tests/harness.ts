@@ -21,6 +21,7 @@ import {
 import AttachmentStore, { AttachmentError, AttachmentId } from '@deepseek-ai/dsh-attachment'
 import type { ImageAttachmentLimits, ImageAttachmentRef, SaveImageAttachment, StoredImageAttachment } from '@deepseek-ai/dsh-attachment'
 import CommandsPlugin from '@deepseek-ai/dsh-commands'
+import SkillRegistry from '@deepseek-ai/dsh-skill'
 import { type GenerateOptions, LlmAdapter, ReasoningEffortId, type LlmResolvedModelInfo, type StreamChunk } from '@deepseek-ai/dsh-llm'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
@@ -216,6 +217,8 @@ export interface BridgeHarness {
   replacePrimaryProviders: (providers: string[]) => void
   /** Register one human command; requires `commands: true`. */
   registerCommand: (name: string, description: string, hint?: string) => () => void
+  /** Register one runtime skill; requires `skills: true`. */
+  registerSkill: (name: string, description: string) => () => void
   closeClientTransport: () => Promise<void>
   abortClientTransport: () => Promise<void>
   acpFiber: Awaited<ReturnType<Context['plugin']>>
@@ -235,6 +238,8 @@ export async function makeBridgeHarness(options: {
   attachments?: boolean
   /** Mount the human-command registry so `/command` discovery is exercised. */
   commands?: boolean
+  /** Mount the skill registry so user-invocable skills join the advertised catalog. */
+  skills?: boolean
   persistenceRoot?: string
 } = {}): Promise<BridgeHarness> {
   const adapter = new MockAdapter(options.script ?? [], options.imageCapable === true)
@@ -246,6 +251,7 @@ export async function makeBridgeHarness(options: {
   await ctx.plugin(TokenMeter)
   if (options.attachments !== false) await ctx.plugin(MemoryAttachmentStore)
   if (options.commands === true) await ctx.plugin(CommandsPlugin)
+  if (options.skills === true) await ctx.plugin(SkillRegistry)
   const loopFiber = await ctx.plugin(AgentLoop, { agents: [] })
   const primaryAdapter = ctx.llm.registerAdapter(['mock'], adapter)
 
@@ -278,6 +284,12 @@ export async function makeBridgeHarness(options: {
       description,
       ...hint === undefined ? {} : { input: { hint } },
       handler: () => ({ kind: 'success', text: `${name} ran` }),
+    }),
+    registerSkill: (name, description) => ctx.skills.register({
+      name,
+      description,
+      content: `# ${name}\n\nBody for ${name}.`,
+      source: 'runtime',
     }),
     client: undefined as unknown as BridgeClient,
     acpFiber: undefined as unknown as BridgeHarness['acpFiber'],
