@@ -46,6 +46,8 @@ import {
   type Stream,
 } from '@agentclientprotocol/sdk'
 import type { SessionId } from '@deepseek-ai/dsh-session'
+// Side-effect type import: declaration-merges the `commands/change` event observed below.
+import type {} from '@deepseek-ai/dsh-commands/types'
 import type {} from '@deepseek-ai/dsh-session-persistence'
 // Side-effect type import: declaration-merges the approval waterfall answered below.
 import type {} from '@deepseek-ai/dsh-user-approval'
@@ -174,6 +176,12 @@ export function apply(ctx: Context, config: AcpConfig): void {
     for (const record of sessions.values()) record.topologyChanged()
   })
 
+  // A plugin may register or dispose a `/command` after its session already
+  // exists, so the advertised catalog is republished on every registry change.
+  ctx.on('commands/change', () => {
+    for (const record of sessions.values()) record.commandsChanged()
+  })
+
   // Permission requests are a machine policy channel for ACP clients such as
   // dsh-subagent-acp. The bridge offers one-shot choices only and never infers a
   // durable grant from an unknown client response.
@@ -256,6 +264,7 @@ export function apply(ctx: Context, config: AcpConfig): void {
         // The attached log writer's flush materializes an empty session durably.
         await ctx.sessions.flush(record.agent.session)
         assertOpen()
+        record.commandsChanged()
         return { sessionId, configOptions }
       } catch (error: unknown) {
         sessions.delete(sessionId)
@@ -307,7 +316,9 @@ export function apply(ctx: Context, config: AcpConfig): void {
         }
         sessions.set(sessionId, record)
         try {
-          return { configOptions: await record.configOptions(signal) }
+          const configOptions = await record.configOptions(signal)
+          record.commandsChanged()
+          return { configOptions }
         } catch (error: unknown) {
           sessions.delete(sessionId)
           await record.close('session/resume option discovery failed')

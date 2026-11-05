@@ -1036,4 +1036,51 @@ describe('automation-only ACP bridge', () => {
       .rejects.toThrow(/unknown session/)
     await expect(harness.client.cancel({ sessionId: 'missing' })).resolves.toBeUndefined()
   })
+
+  it('publishes the registered command catalog after session/new', async () => {
+    harness = await makeBridgeHarness({ commands: true })
+    harness.registerCommand('compact', 'Compact older conversation history')
+    harness.registerCommand('goal', 'Set or view the goal', '<objective>')
+    await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
+    const created = await harness.client.newSession({ cwd: process.cwd(), mcpServers: [] })
+
+    await vi.waitFor(() => {
+      expect(harness!.updates.some(update => update.sessionUpdate === 'available_commands_update')).toBe(true)
+    })
+    const update = harness.updates.find(item => item.sessionUpdate === 'available_commands_update')
+    if (update?.sessionUpdate !== 'available_commands_update') throw new Error('expected commands update')
+    expect(update.availableCommands).toEqual([
+      { name: 'compact', description: 'Compact older conversation history' },
+      { name: 'goal', description: 'Set or view the goal', input: { hint: '<objective>' } },
+    ])
+    expect(harness.sessionUpdates.at(-1)?.sessionId).toBe(created.sessionId)
+  })
+
+  it('republishes the command catalog when a plugin registers one later', async () => {
+    harness = await makeBridgeHarness({ commands: true })
+    await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
+    await harness.client.newSession({ cwd: process.cwd(), mcpServers: [] })
+    await vi.waitFor(() => {
+      expect(harness!.updates.some(update => update.sessionUpdate === 'available_commands_update')).toBe(true)
+    })
+
+    harness.registerCommand('feedback', 'Record feedback about this session')
+
+    await vi.waitFor(() => {
+      const updates = harness!.updates.filter(item => item.sessionUpdate === 'available_commands_update')
+      expect(updates).toHaveLength(2)
+      const latest = updates.at(-1)
+      if (latest?.sessionUpdate !== 'available_commands_update') throw new Error('expected commands update')
+      expect(latest.availableCommands.map(command => command.name)).toEqual(['feedback'])
+    })
+  })
+
+  it('advertises no command catalog when the registry is not composed', async () => {
+    harness = await makeBridgeHarness()
+    await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
+    await harness.client.newSession({ cwd: process.cwd(), mcpServers: [] })
+
+    expect(harness.updates.some(update => update.sessionUpdate === 'available_commands_update')).toBe(false)
+  })
+
 })

@@ -21,6 +21,22 @@ import { mountAcpMcpServers } from './mcp.ts'
 import { AcpModelControl } from './model-control.ts'
 import { assistantUpdates, toolCallUpdate, toolResultUpdate } from './updates.ts'
 
+/** One registered human command, narrowed to the fields ACP advertises. */
+interface AvailableCommandMetadata {
+  /** Command name without the leading slash. */
+  readonly name: string
+  /** Human-readable summary used in discovery UI. */
+  readonly description: string
+  /** Optional free-form input hint advertised to capable clients. */
+  readonly input?: { readonly hint: string }
+}
+
+/** Human-command registry without depending on the commands package. */
+interface CommandRegistry {
+  /** Effective descriptors for one agent, after scoped shadowing. */
+  list(agent: Agent): readonly AvailableCommandMetadata[]
+}
+
 /** Subagent completion and teardown without depending on the subagent package. */
 interface SubagentLifecycle {
   /** Dispose subagent descendants below exact host-owned parents child-first. */
@@ -232,6 +248,39 @@ export class AcpSession {
       /* v8 ignore start -- option discovery contains per-provider failure. */
       .catch((error: unknown) => {
         this.ctx.logger.warn(`acp: config-option update failed: ${errorChain(error)}`)
+      })
+    /* v8 ignore stop */
+  }
+
+  /**
+   * Publish the effective `/command` catalog, then serialize its notification
+   * without blocking execution updates.
+   *
+   * The registry is optional: a composition without `@deepseek-ai/dsh-commands`
+   * advertises nothing rather than failing the session.
+   */
+  commandsChanged(): void {
+    if (this.closing !== undefined) return
+    const commands = this.ctx.get('commands') as CommandRegistry | undefined
+    if (commands === undefined) return
+    const previous = this.outputTail
+    this.outputTail = previous
+      .then(() => this.notify({
+        sessionId: this.agent.session.id,
+        update: {
+          sessionUpdate: 'available_commands_update',
+          availableCommands: commands.list(this.agent).map(command => ({
+            name: command.name,
+            description: command.description,
+            ...command.input === undefined
+              ? {}
+              : { input: { hint: command.input.hint } },
+          })),
+        },
+      }))
+      /* v8 ignore start -- the bridge notifier contains transport failure. */
+      .catch((error: unknown) => {
+        this.ctx.logger.warn(`acp: available-commands update failed: ${errorChain(error)}`)
       })
     /* v8 ignore stop */
   }
