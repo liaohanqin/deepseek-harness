@@ -45,12 +45,16 @@ import {
   type SessionNotification,
   type Stream,
 } from '@agentclientprotocol/sdk'
-import type { SessionId } from '@deepseek-ai/dsh-session'
+import type { SessionHeader, SessionId } from '@deepseek-ai/dsh-session'
 // Side-effect type import: declaration-merges the `commands/change` event observed below.
 import type {} from '@deepseek-ai/dsh-commands/types'
 import type {} from '@deepseek-ai/dsh-session-persistence'
 // Side-effect type import: declaration-merges the approval waterfall answered below.
 import type {} from '@deepseek-ai/dsh-user-approval'
+// Side-effect type import: declaration-merges the optional `sessionProjectionCache`
+// service and the `title` projection key the listing reads a hint from.
+import type {} from '@deepseek-ai/dsh-session-projection-cache'
+import type {} from '@deepseek-ai/dsh-session-title'
 import { supportsAcpImagePrompts } from './content.ts'
 import { AcpMcpConfigError } from './mcp.ts'
 import { AcpModelConfigError } from './model-control.ts'
@@ -127,6 +131,27 @@ export function apply(ctx: Context, config: AcpConfig): void {
   const activating = new Set<SessionId>()
   let closed = false
   let imagePromptEnabled = false
+
+  /**
+   * Read one listed Session's title from the projection cache, as a zero-I/O
+   * hint. The title projection folds the latest `session/title` event, so a
+   * record is a genuine (possibly stale) title for this Session's log.
+   *
+   * Both cached faces are tried because they are mutually exclusive: a
+   * checkpoint bound to the header's current lifecycle is served by
+   * `cachedSnapshot`, while one from a predecessor lifecycle (the log moved on
+   * to a newer format since) is served only by `cachedPredecessorTitle`.
+   * @param header - authoritative header of the listed Session.
+   * @returns the cached title, or `undefined` when this deployment has no
+   *   projection cache or holds no usable record for the Session.
+   */
+  const cachedSessionTitle = (header: SessionHeader): string | undefined => {
+    const cache = ctx.get('sessionProjectionCache')
+    const snapshot = cache?.cachedSnapshot(header, ['title'])
+      ?? cache?.cachedPredecessorTitle(header)
+    const title = snapshot?.values.title
+    return typeof title === 'string' && title.length > 0 ? title : undefined
+  }
 
   /** Return the bridge-owned record for an agent, rejecting same-id impostors. */
   const ownedRecord = (agent: Parameters<AcpSession['owns']>[0]): AcpSession | undefined => {
@@ -351,7 +376,12 @@ export function apply(ctx: Context, config: AcpConfig): void {
         if (params.cwd !== undefined && params.cwd !== null && !await sameDirectory(header.cwd, params.cwd)) {
           return undefined
         }
-        return { sessionId: header.id, cwd: header.cwd, createdAt: header.createdAt }
+        return {
+          sessionId: header.id,
+          cwd: header.cwd,
+          createdAt: header.createdAt,
+          title: cachedSessionTitle(header),
+        }
       }))
       const entries = filtered
         .filter((entry): entry is NonNullable<typeof entry> => entry !== undefined)
@@ -362,7 +392,13 @@ export function apply(ctx: Context, config: AcpConfig): void {
       const page = remaining.slice(0, sessionListPageSize)
       const next = remaining.length > page.length ? page.at(-1) : undefined
       return {
-        sessions: page.map(({ sessionId, cwd }) => ({ sessionId, cwd })),
+        sessions: page.map(({ sessionId, cwd, createdAt, title }) => ({
+          sessionId,
+          cwd,
+          // The protocol wants RFC 3339 here, not the header's epoch millis.
+          updatedAt: new Date(createdAt).toISOString(),
+          ...title === undefined ? {} : { title },
+        })),
         ...next === undefined ? {} : { nextCursor: encodeSessionListCursor(next) },
       }
     },

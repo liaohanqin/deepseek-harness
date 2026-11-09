@@ -39,6 +39,12 @@
       "path": "../../session/session-persistence"
     },
     {
+      "path": "../../session/session-projection-cache"
+    },
+    {
+      "path": "../../session/session-title"
+    },
+    {
       "path": "../../interaction/user-approval"
     },
     {

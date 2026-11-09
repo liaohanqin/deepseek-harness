@@ -128,7 +128,7 @@ describe('automation-only ACP bridge', () => {
 
     await expect(prompt).resolves.toEqual({ stopReason: 'cancelled' })
     await expect(harness.client.listSessions({})).resolves.toMatchObject({
-      sessions: [{ sessionId: created.sessionId, cwd: process.cwd() }],
+      sessions: [{ sessionId: created.sessionId, cwd: process.cwd(), updatedAt: expect.any(String) }],
     })
     await harness.client.resumeSession({ sessionId: created.sessionId, cwd: process.cwd(), mcpServers: [] })
   })
@@ -200,7 +200,7 @@ describe('automation-only ACP bridge', () => {
     await harness.client.closeSession({ sessionId: created.sessionId })
 
     await expect(harness.client.listSessions({})).resolves.toEqual({
-      sessions: [{ sessionId: created.sessionId, cwd: process.cwd() }],
+      sessions: [{ sessionId: created.sessionId, cwd: process.cwd(), updatedAt: expect.any(String) }],
     })
     await expect(harness.client.resumeSession({ sessionId: created.sessionId, cwd: process.cwd() }))
       .resolves.toHaveProperty('configOptions')
@@ -353,15 +353,65 @@ describe('automation-only ACP bridge', () => {
     })
   })
 
-  it('lists closed persisted sessions without presentation metadata', async () => {
+  it('lists closed persisted sessions with an activity timestamp and no title', async () => {
     harness = await makeBridgeHarness({ script: [textResponse('answer')] })
     await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
     const created = await harness.client.newSession({ cwd: process.cwd(), mcpServers: [] })
     await harness.client.prompt({ sessionId: created.sessionId, prompt: [{ type: 'text', text: 'persist me' }] })
     await harness.client.closeSession({ sessionId: created.sessionId })
 
+    // No projection cache is mounted here, so the title is omitted rather than
+    // invented: the protocol marks it optional and clients supply a placeholder.
     await expect(harness.client.listSessions({})).resolves.toEqual({
-      sessions: [{ sessionId: created.sessionId, cwd: process.cwd() }],
+      sessions: [{ sessionId: created.sessionId, cwd: process.cwd(), updatedAt: expect.any(String) }],
+    })
+  })
+
+  it('reports a cached title and falls back across both cache faces', async () => {
+    harness = await makeBridgeHarness()
+    await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
+    const persistence = harness.ctx.get('sessionPersistence')!
+    const current = { version: SESSION_FORMAT_VERSION, id: SessionId('current'), createdAt: 7, isSeeded: false, cwd: '/tmp/current' } satisfies SessionHeader
+    const predecessor = { version: SESSION_FORMAT_VERSION, id: SessionId('predecessor'), createdAt: 6, isSeeded: false, cwd: '/tmp/predecessor' } satisfies SessionHeader
+    const uncached = { version: SESSION_FORMAT_VERSION, id: SessionId('uncached'), createdAt: 5, isSeeded: false, cwd: '/tmp/uncached' } satisfies SessionHeader
+    vi.spyOn(persistence, 'list').mockResolvedValue([current, predecessor, uncached].map(snapshotOf))
+    // `cachedSnapshot` serves a record bound to the header's current lifecycle;
+    // `cachedPredecessorTitle` serves one from a predecessor lifecycle. They are
+    // mutually exclusive, so the listing must try both to cover either Session.
+    const cache = {
+      cachedSnapshot: (header: SessionHeader) => header.id === SessionId('current')
+        ? { asOfSeq: 1, values: { title: 'current title' } }
+        : undefined,
+      cachedPredecessorTitle: (header: SessionHeader) => header.id === SessionId('predecessor')
+        ? { asOfSeq: 1, values: { title: 'predecessor title' } }
+        : undefined,
+    }
+    vi.spyOn(harness.ctx, 'get').mockImplementation(((name: string) => name === 'sessionProjectionCache' ? cache : undefined) as never)
+
+    await expect(harness.client.listSessions({})).resolves.toEqual({
+      sessions: [
+        { sessionId: 'current', cwd: '/tmp/current', updatedAt: '1970-01-01T00:00:00.007Z', title: 'current title' },
+        { sessionId: 'predecessor', cwd: '/tmp/predecessor', updatedAt: '1970-01-01T00:00:00.006Z', title: 'predecessor title' },
+        { sessionId: 'uncached', cwd: '/tmp/uncached', updatedAt: '1970-01-01T00:00:00.005Z' },
+      ],
+    })
+  })
+
+  it('omits an empty cached title rather than reporting a blank label', async () => {
+    harness = await makeBridgeHarness()
+    await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
+    const persistence = harness.ctx.get('sessionPersistence')!
+    vi.spyOn(persistence, 'list').mockResolvedValue([
+      snapshotOf({ version: SESSION_FORMAT_VERSION, id: SessionId('blank'), createdAt: 5, isSeeded: false, cwd: '/tmp/blank' }),
+    ])
+    const cache = {
+      cachedSnapshot: () => ({ asOfSeq: 1, values: { title: '' } }),
+      cachedPredecessorTitle: () => undefined,
+    }
+    vi.spyOn(harness.ctx, 'get').mockImplementation(((name: string) => name === 'sessionProjectionCache' ? cache : undefined) as never)
+
+    await expect(harness.client.listSessions({})).resolves.toEqual({
+      sessions: [{ sessionId: 'blank', cwd: '/tmp/blank', updatedAt: '1970-01-01T00:00:00.005Z' }],
     })
   })
 
@@ -429,9 +479,9 @@ describe('automation-only ACP bridge', () => {
     await expect(harness.client.listSessions({ cwd: 'relative' })).rejects.toThrow(/absolute path/)
     await expect(harness.client.listSessions({ cwd: '/missing/filter' })).resolves.toEqual({
       sessions: [
-        { sessionId: 'fork', cwd: '/missing/filter' },
-        { sessionId: 'valid-a', cwd: '/missing/filter' },
-        { sessionId: 'valid-b', cwd: '/missing/filter' },
+        { sessionId: 'fork', cwd: '/missing/filter', updatedAt: '1970-01-01T00:00:00.007Z' },
+        { sessionId: 'valid-a', cwd: '/missing/filter', updatedAt: '1970-01-01T00:00:00.003Z' },
+        { sessionId: 'valid-b', cwd: '/missing/filter', updatedAt: '1970-01-01T00:00:00.003Z' },
       ],
     })
     await expect(harness.client.resumeSession({
@@ -532,7 +582,7 @@ describe('automation-only ACP bridge', () => {
       harness = await makeBridgeHarness({ persistenceRoot, script: [textResponse('after restart')] })
       await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
       await expect(harness.client.listSessions({})).resolves.toEqual({
-        sessions: [{ sessionId: created.sessionId, cwd: process.cwd() }],
+        sessions: [{ sessionId: created.sessionId, cwd: process.cwd(), updatedAt: expect.any(String) }],
       })
       await harness.client.resumeSession({ sessionId: created.sessionId, cwd: process.cwd(), mcpServers: [] })
       await expect(harness.client.prompt({
