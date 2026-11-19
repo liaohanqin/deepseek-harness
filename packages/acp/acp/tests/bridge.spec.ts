@@ -54,7 +54,7 @@ describe('automation-only ACP bridge', () => {
       agentCapabilities: {
         mcpCapabilities: { http: true },
         promptCapabilities: { image: false, audio: false, embeddedContext: false },
-        sessionCapabilities: { close: {}, list: {}, resume: {} },
+        sessionCapabilities: { close: {}, fork: {}, list: {}, resume: {} },
       },
       // Steering is an extension, so clients read it from top-level metadata.
       _meta: { steering: { supported: true } },

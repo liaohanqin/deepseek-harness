@@ -241,7 +241,7 @@ export function apply(ctx: Context, config: AcpConfig): void {
         agentCapabilities: {
           mcpCapabilities: { http: true },
           promptCapabilities: { image: imagePromptEnabled, audio: false, embeddedContext: false },
-          sessionCapabilities: { close: {}, list: {}, resume: {} },
+          sessionCapabilities: { close: {}, fork: {}, list: {}, resume: {} },
         },
         // Steering is an ACP extension, so clients discover it in the
         // response's top-level `_meta` rather than in `agentCapabilities`
