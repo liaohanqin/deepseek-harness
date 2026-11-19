@@ -272,6 +272,19 @@ describe('automation-only ACP bridge', () => {
     })).rejects.toThrow(/cwd/i)
   })
 
+  it('reports a missing session-query backend instead of an empty fork', async () => {
+    harness = await makeBridgeHarness({ sessionQuery: false, script: [textResponse('answer')] })
+    await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
+    const created = await harness.client.newSession({ cwd: process.cwd(), mcpServers: [] })
+    await harness.client.prompt({ sessionId: created.sessionId, prompt: [{ type: 'text', text: 'answer' }] })
+
+    await expect(harness.client.forkSession({
+      sessionId: created.sessionId,
+      cwd: process.cwd(),
+      mcpServers: [],
+    })).rejects.toThrow(/session-query backend/i)
+  })
+
   it('materializes an empty closed session for list and resume', async () => {
     harness = await makeBridgeHarness()
     await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })

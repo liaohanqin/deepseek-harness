@@ -91,7 +91,7 @@ const DEFAULT_SESSION_LIST_PAGE_SIZE = 100
 
 export const name = 'acp'
 /** Core services required by the standard automation controls. */
-export const inject = ['agents', 'llm', 'sessionPersistence', 'sessionQuery', 'sessions']
+export const inject = ['agents', 'llm', 'sessionPersistence', 'sessions']
 
 /** Preserve invalid-parameter detail in the SDK wire error message. */
 function invalidParams(detail: string): RequestError {
@@ -130,7 +130,6 @@ export function apply(ctx: Context, config: AcpConfig): void {
   // ACP handlers execute outside this plugin's injection scope, so capture the
   // injected service during apply rather than reading it lazily in a callback.
   const persistence = ctx.sessionPersistence
-  const sessionQuery = ctx.sessionQuery
   const logger = ctx.logger
   const sessionListPageSize = resolveSessionListPageSize(config.sessionListPageSize)
   const sessions = new Map<SessionId, AcpSession>()
@@ -308,6 +307,8 @@ export function apply(ctx: Context, config: AcpConfig): void {
       assertOpen()
       validateWorkspaceParams(params)
       const sourceId = brandString<SessionId>(params.sessionId)
+      const sessionQuery = ctx.get('sessionQuery')
+      if (sessionQuery === undefined) throw internalError('session/fork requires a session-query backend')
       let observation: SessionObservation
       try {
         observation = await sessionQuery.observeSession(sourceId, { signal })

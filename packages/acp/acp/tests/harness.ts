@@ -246,6 +246,8 @@ export async function makeBridgeHarness(options: {
   /** Mount the skill registry so user-invocable skills join the advertised catalog. */
   skills?: boolean
   persistenceRoot?: string
+  /** Omit the session-query backend to exercise deployments that do not mount it. */
+  sessionQuery?: boolean
 } = {}): Promise<BridgeHarness> {
   const adapter = new MockAdapter(options.script ?? [], options.imageCapable === true)
   const ctx = new Context()
@@ -255,7 +257,9 @@ export async function makeBridgeHarness(options: {
   await ctx.plugin(JsonlSessionPersistence, { root: persistenceRoot, compression: 'none' })
   // The shipped base bundle mounts this backend with `openAt: never`; fork
   // reads sessions through `ctx.sessionQuery.observeSession`.
-  await ctx.plugin(SessionQuerySqlite, { path: ':memory:', openAt: 'never' })
+  if (options.sessionQuery !== false) {
+    await ctx.plugin(SessionQuerySqlite, { path: ':memory:', openAt: 'never' })
+  }
   await ctx.plugin(TokenMeter)
   if (options.attachments !== false) await ctx.plugin(MemoryAttachmentStore)
   if (options.commands === true) await ctx.plugin(CommandsPlugin)
