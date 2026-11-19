@@ -66,6 +66,7 @@ kind: "package-reference"
 | `session/new` | 全新持久 agent；其绝对工作区（以规范路径记录）与 stdio 或 HTTP MCP 服务器会在发布前通过校验，并返回完整配置选项状态。 |
 | `session/list` | 按确定的新到旧顺序分页返回已持久化、可恢复的根会话；可选绝对 `cwd` 筛选会尽可能使用物理目录标识。 |
 | `session/resume` | 恢复一个已持久化且非活跃的会话；组合前校验其规范工作区，并恢复日志但不回放旧更新。 |
+| `session/fork` | 以源会话最近一个已完成轮次为种子创建独立会话，并把源会话记录为其 fork 父级；源会话可以是活跃或已持久化的，子会话创建后即可接受提示词。 |
 | `session/close` | 停稳式取消、更新 drain、后代释放、持久化 flush，并且只释放指定 Agent 作用域。 |
 | `session/set_config_option` | 串行更新公布的 `model` 或 `reasoning_effort`，并返回完整结果状态。 |
 | `session/prompt` | 有序文本、资源链接与受支持图片，每个会话一次一个提示词；根 Agent 与后代完成且有序更新交付后才结算。 |
@@ -74,13 +75,13 @@ kind: "package-reference"
 | `session/request_permission` | 带一次性允许／拒绝选项的权限提示；你的客户端可以自动回答。 |
 | `_session/steering` | 扩展方法，通过 `_meta.steering.supported` 广告：把一条提示词并入正在运行的那一轮，返回 `{"outcome":"injected"}`。没有运行中的轮次时不消费任何内容，返回 `{"outcome":"promptRequired","reason":"noRunningTurn"}`，由客户端另行提交普通 `session/prompt`。 |
 
-会话列表和恢复允许普通 fork，包括含有 `parentSession` 的历史日志；`origin: subagent` 仍被排除。
+会话列表、恢复和 fork 都允许普通 fork，包括含有 `parentSession` 的历史日志；`origin: subagent` 在这三者中仍被排除。
 
 受管理后代运行期间、它们的结果触发根 Agent 后续轮次期间，以及已提交输出仍在交付期间，提示词保持进行中。输出交付期间接受的根 Agent 工作会加入同一活动区间，并在该区间完成后结算。最终结果包含最新根轮次的停止原因与所有助手输出交付错误；只有原始提示词轮次固定使用接受时捕获的模型选择。取消会停止调用时已有的根 Agent 活动，并等待该活动及其已排队输出完成。之后到达的子 Agent 消息可以启动自主工作，但不会延迟取消响应；会话仍可接受后续提示词。收件箱消息处于停放状态的空闲后代继续驻留，但不延迟提示词完成。关闭会话还会释放其后代。
 
 即使前一轮已经完成，追加 `turn/start` 或 `turn/end` 失败仍会使提示词请求失败。
 
-会话配置从实时 LLM（大语言模型）服务目录提供不透明的提供方／模型选项，并在确切模型声明推理选项时提供 `reasoning_effort`。选项变更记录 Session 选择，从下一个模型步骤开始生效，包括当前轮次的后续步骤；已准备的步骤及其重试保留捕获的选择。图片准入检查准入开始时的当前选择。恢复会还原记录中的选择，即使尚未有请求使用它。ACP 客户端是受信控制器：stdio MCP 条目授权其绝对命令与环境，HTTP 条目授权其绝对 HTTP(S) URL 与 header；初始连接或发现失败会回滚尚未发布的 Agent。不支持的界面会被省略或拒绝：`session/load`、删除、fork、附加目录、SSE（Server-Sent Events）或 ACP 传输 MCP、mode、计划、终端、客户端文件系统操作与 elicitation。
+会话配置从实时 LLM（大语言模型）服务目录提供不透明的提供方／模型选项，并在确切模型声明推理选项时提供 `reasoning_effort`。选项变更记录 Session 选择，从下一个模型步骤开始生效，包括当前轮次的后续步骤；已准备的步骤及其重试保留捕获的选择。图片准入检查准入开始时的当前选择。恢复会还原记录中的选择，即使尚未有请求使用它。ACP 客户端是受信控制器：stdio MCP 条目授权其绝对命令与环境，HTTP 条目授权其绝对 HTTP(S) URL 与 header；初始连接或发现失败会回滚尚未发布的 Agent。不支持的界面会被省略或拒绝：`session/load`、删除、附加目录、SSE（Server-Sent Events）或 ACP 传输 MCP、mode、计划、终端、客户端文件系统操作与 elicitation。
 
 -----
 
@@ -175,7 +176,7 @@ kind: "package-reference"
 - **仅一个主 workspace**——附加目录仍不支持。
 - **仅光栅提示词图片**——PNG、JPEG、WebP 与 GIF 要求持久附件存储及确切的图片能力路由。
 - **仅 MCP 工具**——MCP resource 与 prompt 没有 DSH 消费方。
-- **没有 transcript 回放或交互式扩展**——会话删除、fork、`session/load`、mode、计划、终端、客户端文件系统操作与 elicitation 仍不属于此自动化界面。
+- **没有 transcript 回放或交互式扩展**——会话删除、`session/load`、mode、计划、终端、客户端文件系统操作与 elicitation 仍不属于此自动化界面。
 - **命令只通告、不执行**——`session/update` 会列出宿主 `/command` 目录与所有用户可调用的 skill，供客户端补全行首斜杠，但 ACP 仍没有命令执行通道：选中项以普通 prompt 文本到达会话。skill 由宿主侧解析，因为 pre-step 边界识别 `/name` 手势；条目带 `_meta.skill`，同名时命令优先。
 
 <a id="dev-note"></a>

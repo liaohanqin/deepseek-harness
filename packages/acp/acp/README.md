@@ -66,6 +66,7 @@ One connection can run several sessions at once, each independent. The calls a c
 | `session/new` | A fresh persistent agent whose absolute workspace, recorded by its canonical path, and stdio or HTTP MCP servers are validated before publication, plus its complete configuration-option state. |
 | `session/list` | Deterministic newest-first pages of persisted, resumable root sessions; an optional absolute `cwd` filter uses physical-directory identity where possible. |
 | `session/resume` | A persisted inactive session whose canonical workspace is verified before composition; its log is restored without replaying old updates. |
+| `session/fork` | An independent session seeded from the source's latest completed turn, with the source recorded as its fork parent; the source may be live or persisted, and the child is immediately promptable. |
 | `session/close` | Quiescent cancellation, update draining, descendant disposal, persistence flush, and disposal of only the addressed Agent scope. |
 | `session/set_config_option` | A serialized update to the advertised `model` or `reasoning_effort`, returning the complete resulting state. |
 | `session/prompt` | Ordered text, resource links, and supported images, one prompt at a time per session; settlement follows root and descendant completion plus ordered update delivery. |
@@ -74,13 +75,13 @@ One connection can run several sessions at once, each independent. The calls a c
 | `session/request_permission` | A permission prompt with one-shot allow/reject choices; your client can answer automatically. |
 | `_session/steering` | Extension, advertised as `_meta.steering.supported`: joins one prompt to the turn already running and returns `{"outcome":"injected"}`. With no live turn it consumes nothing and returns `{"outcome":"promptRequired","reason":"noRunningTurn"}`, leaving the client to submit an ordinary `session/prompt`. |
 
-Session listing and resume admit ordinary forks, including historical logs with `parentSession`; `origin: subagent` remains excluded.
+Session listing, resume, and fork admit ordinary forks, including historical logs with `parentSession`; `origin: subagent` remains excluded from all three.
 
 A prompt remains in flight while managed descendants run, while their results trigger later root turns, and while committed output drains. Root work accepted during that output drain joins the same activity interval before completion. Its completion includes the latest root stop reason and any assistant output delivery failure; only the original prompt turn pins the model selection captured at admission. Cancellation stops the root activity present at that call and waits for that activity and its queued output. Later child messages may start autonomous work and do not delay the cancelled response; the session remains available for later prompts. Idle descendants with parked inbox messages remain resident but do not delay prompt completion. Closing the session also drains its descendants.
 
 A failure to append `turn/start` or `turn/end` rejects the prompt even when a preceding turn completed.
 
-Session configuration offers opaque provider/model choices from the live LLM service catalog and a `reasoning_effort` selector when the exact model declares one. An option change records the Session selection and takes effect at the next model step, including a continuation in the current turn; an already prepared step and its retries keep their captured selection. Image admission checks the selection current when admission begins. Resume restores a recorded selection even when no request has used it yet. ACP clients are trusted controllers: stdio MCP entries authorize their absolute commands and environment, HTTP entries authorize their absolute HTTP(S) URLs and headers, and any initial connection or discovery failure rolls back the unpublished Agent. Unsupported surfaces are omitted or rejected: `session/load`, deletion, fork, additional directories, SSE or ACP-transport MCP, modes, plans, terminals, client filesystem operations, and elicitation.
+Session configuration offers opaque provider/model choices from the live LLM service catalog and a `reasoning_effort` selector when the exact model declares one. An option change records the Session selection and takes effect at the next model step, including a continuation in the current turn; an already prepared step and its retries keep their captured selection. Image admission checks the selection current when admission begins. Resume restores a recorded selection even when no request has used it yet. ACP clients are trusted controllers: stdio MCP entries authorize their absolute commands and environment, HTTP entries authorize their absolute HTTP(S) URLs and headers, and any initial connection or discovery failure rolls back the unpublished Agent. Unsupported surfaces are omitted or rejected: `session/load`, deletion, additional directories, SSE or ACP-transport MCP, modes, plans, terminals, client filesystem operations, and elicitation.
 
 -----
 
@@ -175,7 +176,7 @@ These limits define when this package is a poor fit or needs special operational
 - **One primary workspace** — additional directories remain unsupported.
 - **Raster prompt images only** — PNG, JPEG, WebP, and GIF require a durable attachment store and an exact image-capable route.
 - **MCP tools only** — MCP resources and prompts have no DSH consumer.
-- **No transcript replay or interactive extensions** — session deletion, fork, `session/load`, modes, plans, terminals, client filesystem operations, and elicitation remain outside this automation surface.
+- **No transcript replay or interactive extensions** — session deletion, `session/load`, modes, plans, terminals, client filesystem operations, and elicitation remain outside this automation surface.
 - **Commands are advertised, not executed** — `session/update` lists the host `/command` catalog and every user-invocable skill so a client can complete a leading slash, but ACP still has no command execution channel: a selected entry reaches the session as ordinary prompt text. Skills resolve host-side because the pre-step boundary recognizes the `/name` gesture; entries carry `_meta.skill` and a command wins any shared name.
 
 <a id="dev-note"></a>
