@@ -129,7 +129,7 @@ describe('default sandbox composition keyless smoke (real cordis.yml via the Loa
     expect(init.agentCapabilities).toEqual({
       mcpCapabilities: { http: true },
       promptCapabilities: { image: false, audio: false, embeddedContext: false },
-      sessionCapabilities: { close: {}, list: {}, resume: {} },
+      sessionCapabilities: { close: {}, fork: {}, list: {}, resume: {} },
     })
     const { sessionId } = await client.newSession({ cwd: workdir, mcpServers: [] })
     expect(sessionId.length).toBeGreaterThan(0)

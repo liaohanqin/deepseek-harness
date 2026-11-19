@@ -582,9 +582,10 @@ describe.skipIf(!existsSync(dshBin))('dsh BUILT bin (node lib/bin.js, no tsx)', 
       expect(initialized.agentCapabilities).toEqual({
         mcpCapabilities: { http: true },
         promptCapabilities: { image: false, audio: false, embeddedContext: false },
-        sessionCapabilities: { close: {}, list: {}, resume: {} },
+        sessionCapabilities: { close: {}, fork: {}, list: {}, resume: {} },
       })
-      expect('_meta' in initialized).toBe(false)
+      // Steering is an ACP extension, advertised in top-level metadata.
+      expect(initialized._meta).toEqual({ steering: { supported: true } })
       const session = await client.request(methods.agent.session.new, { cwd: home, mcpServers: [] })
       expect(session.sessionId).toBeTruthy()
       expect(await client.request(methods.agent.session.prompt, {

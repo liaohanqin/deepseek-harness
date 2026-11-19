@@ -54,9 +54,10 @@ describe('standard ACP v1 control surface', () => {
       expect(initialized.agentCapabilities).toEqual({
         mcpCapabilities: { http: true },
         promptCapabilities: { image: false, audio: false, embeddedContext: false },
-        sessionCapabilities: { close: {}, list: {}, resume: {} },
+        sessionCapabilities: { close: {}, fork: {}, list: {}, resume: {} },
       })
-      expect('_meta' in initialized).toBe(false)
+      // Steering is an ACP extension, advertised in top-level metadata.
+      expect(initialized._meta).toEqual({ steering: { supported: true } })
       const created = await first.client.newSession({ cwd, mcpServers })
       const beta = selectValue(created.configOptions, 'model', 'Beta')
       const selectedModel = await first.client.setSessionConfigOption({
