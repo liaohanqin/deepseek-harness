@@ -28,6 +28,7 @@ import { type GenerateOptions, LlmAdapter, type ReasoningEffortId, type LlmResol
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
 import * as JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
+import SessionQuerySqlite from '@deepseek-ai/dsh-session-query-sqlite'
 import TokenMeter from '@deepseek-ai/dsh-token-meter'
 import * as AcpPlugin from '../src/index.ts'
 import type { AcpConfig } from '../src/index.ts'
@@ -196,6 +197,8 @@ interface BridgeClient {
   newSession: NonNullable<AcpAgent['newSession']>
   listSessions: NonNullable<AcpAgent['listSessions']>
   resumeSession: NonNullable<AcpAgent['resumeSession']>
+  /** `session/fork`, UNSTABLE in the ACP schema. */
+  forkSession: NonNullable<AcpAgent['unstable_forkSession']>
   closeSession: NonNullable<AcpAgent['closeSession']>
   setSessionConfigOption: NonNullable<AcpAgent['setSessionConfigOption']>
   prompt: (params: PromptRequest, options?: SendRequestOptions) => Promise<PromptResponse>
@@ -250,6 +253,9 @@ export async function makeBridgeHarness(options: {
   const persistenceRoot = options.persistenceRoot ?? await mkdtemp(join(tmpdir(), 'dsh-acp-test-'))
   await mountAgentLoopTestDependencies(ctx, { systemPrompt: { personaPrefix: options.persona ?? '' } })
   await ctx.plugin(JsonlSessionPersistence, { root: persistenceRoot, compression: 'none' })
+  // The shipped base bundle mounts this backend with `openAt: never`; fork
+  // reads sessions through `ctx.sessionQuery.observeSession`.
+  await ctx.plugin(SessionQuerySqlite, { path: ':memory:', openAt: 'never' })
   await ctx.plugin(TokenMeter)
   if (options.attachments !== false) await ctx.plugin(MemoryAttachmentStore)
   if (options.commands === true) await ctx.plugin(CommandsPlugin)
@@ -332,6 +338,7 @@ export async function makeBridgeHarness(options: {
     newSession: params => client.request(methods.agent.session.new, params),
     listSessions: params => client.request(methods.agent.session.list, params),
     resumeSession: params => client.request(methods.agent.session.resume, params),
+    forkSession: params => client.request(methods.agent.session.fork, params),
     closeSession: params => client.request(methods.agent.session.close, params),
     setSessionConfigOption: params => client.request(methods.agent.session.setConfigOption, params),
     prompt: (params, options) => client.request(methods.agent.session.prompt, params, options),

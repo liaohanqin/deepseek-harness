@@ -1,13 +1,23 @@
 import { describe, expect, it } from 'vitest'
 import { SessionSeq } from '@deepseek-ai/dsh-session'
-import type { SessionEvent, SessionEventType } from '@deepseek-ai/dsh-session/types'
+import type { SessionEvent } from '@deepseek-ai/dsh-session/types'
 import { latestCompletedPrefixBoundary } from '../src/fork.ts'
 
-/** A log entry carrying only the fields the boundary rule reads. */
-function pick<T extends SessionEventType>(
-  type: T,
+/**
+ * Build one log entry.
+ *
+ * The boundary rule reads only `type`, `seq`, and `user/message`'s
+ * `surfaceOp`, so a fixture builds from the discriminant it needs instead of
+ * a fabricated `data` payload.
+ * @param type - event discriminant to place at this seq.
+ * @param seq - contiguous position in the fixture log.
+ * @param extra - fields the rule reads beyond the discriminant.
+ * @returns one log entry for the fixture.
+ */
+function entry(
+  type: SessionEvent['type'],
   seq: number,
-  extra: Partial<SessionEvent<T>> = {},
+  extra: { surfaceOp?: 'append' } = {},
 ): SessionEvent {
   return { type, seq: SessionSeq(seq), time: 1, data: {}, ...extra } as SessionEvent
 }
@@ -16,41 +26,41 @@ describe('latestCompletedPrefixBoundary', () => {
   it('returns undefined for an empty log and for a log with no completed turn', () => {
     expect(latestCompletedPrefixBoundary([])).toBeUndefined()
     expect(latestCompletedPrefixBoundary([
-      pick('turn/start', 0),
-      pick('user/message', 1),
+      entry('turn/start', 0),
+      entry('user/message', 1, { surfaceOp: 'append' }),
     ])).toBeUndefined()
   })
 
   it('returns the last turn/end when nothing follows it', () => {
     expect(latestCompletedPrefixBoundary([
-      pick('turn/start', 0),
-      pick('user/message', 1),
-      pick('turn/end', 2),
+      entry('turn/start', 0),
+      entry('user/message', 1, { surfaceOp: 'append' }),
+      entry('turn/end', 2),
     ])).toBe(2)
   })
 
   it('advances past trailing log-only events but stops at the next turn start', () => {
     expect(latestCompletedPrefixBoundary([
-      pick('turn/start', 0),
-      pick('turn/end', 1),
-      pick('session/title', 2),
-      pick('step/start', 3),
-      pick('turn/start', 4),
-      pick('user/message', 5),
+      entry('turn/start', 0),
+      entry('turn/end', 1),
+      entry('session/title', 2),
+      entry('step/start', 3),
+      entry('turn/start', 4),
+      entry('user/message', 5, { surfaceOp: 'append' }),
     ])).toBe(3)
   })
 
   it('stops at an appended user message and at an inbox splice', () => {
     expect(latestCompletedPrefixBoundary([
-      pick('turn/start', 0),
-      pick('turn/end', 1),
-      pick('session/title', 2),
-      pick('user/message', 3, { surfaceOp: 'append' }),
+      entry('turn/start', 0),
+      entry('turn/end', 1),
+      entry('session/title', 2),
+      entry('user/message', 3, { surfaceOp: 'append' }),
     ])).toBe(2)
     expect(latestCompletedPrefixBoundary([
-      pick('turn/start', 0),
-      pick('turn/end', 1),
-      pick('agent/inbox/spliced', 2),
+      entry('turn/start', 0),
+      entry('turn/end', 1),
+      entry('agent/inbox/spliced', 2),
     ])).toBe(1)
   })
 })

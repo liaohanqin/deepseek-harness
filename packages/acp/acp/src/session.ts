@@ -15,7 +15,7 @@ import {
 import type { Agent, AgentHandle, AgentOptions, AgentStatus } from '@deepseek-ai/dsh-agent'
 import { installModelSelection } from '@deepseek-ai/dsh-agent'
 import { createUserMessage, errorChain, type UserMessage } from '@deepseek-ai/dsh-llm'
-import { type Session, type SessionEvent, type SessionId, type TurnEndReason } from '@deepseek-ai/dsh-session'
+import { type Session, type SessionEvent, type SessionId, type SessionLogOffset, type TurnEndReason } from '@deepseek-ai/dsh-session'
 // Side-effect type import: declaration-merges the `workingDirectory` service read below.
 import type {} from '@deepseek-ai/dsh-working-directory'
 import { AcpContentError, admitAcpPrompt } from './content.ts'
@@ -85,6 +85,17 @@ export interface CreateAcpSessionOptions extends AcpSessionBuildOptions {
 /** Persisted ACP session construction inputs. */
 export interface ResumeAcpSessionOptions extends AcpSessionBuildOptions {
   sessionId: SessionId
+}
+
+/** Forked ACP session construction inputs: a child over an exact inherited prefix. */
+export interface ForkAcpSessionOptions extends AcpSessionBuildOptions {
+  sessionId: SessionId
+  /** Contiguous inherited events plus synthetic closers, from `buildForkSeed`. */
+  seed: readonly SessionEvent[]
+  /** Length of the source prefix inside {@link seed}, excluding synthetic closers. */
+  inheritedEventCount: SessionLogOffset
+  /** Source Session and exclusive prefix length the child shares. */
+  parentSource: { sessionId: SessionId; endSeq: SessionLogOffset }
 }
 
 /**
@@ -213,6 +224,31 @@ export class AcpSession {
   static async resume(ctx: Context, options: ResumeAcpSessionOptions): Promise<AcpSession> {
     const handle = await ctx.agents.resume({
       resumeSessionId: options.sessionId,
+      agentOptions: options.agentOptions,
+      signal: options.signal,
+      setup: agentCtx => composeAgent(agentCtx, options),
+    })
+    return new AcpSession(ctx, handle, options.notify)
+  }
+
+  /**
+   * Compose an Agent over an existing Session's inherited event prefix.
+   * The child keeps the source's transcript as a seeded prefix and records
+   * the source as its fork parent; the caller supplies the exact cut.
+   * @param ctx - ACP plugin context with Agent, LLM, and persistence services.
+   * @param options - child identity, inherited seed, workspace, route, MCP, and notifier.
+   * @returns the fully composed per-session module.
+   */
+  static async fork(ctx: Context, options: ForkAcpSessionOptions): Promise<AcpSession> {
+    // The header records the canonical spelling of the workspace; see SessionHeader.cwd.
+    const fs = ctx.get('fs')
+    const cwd = fs === undefined ? options.cwd : fs.processPath(await fs.resolve(options.cwd, { signal: options.signal }))
+    const handle = await ctx.agents.create({
+      sessionId: options.sessionId,
+      seed: options.seed,
+      parentSource: options.parentSource,
+      inheritedEventCount: options.inheritedEventCount,
+      meta: { cwd, isSeeded: true },
       agentOptions: options.agentOptions,
       signal: options.signal,
       setup: agentCtx => composeAgent(agentCtx, options),

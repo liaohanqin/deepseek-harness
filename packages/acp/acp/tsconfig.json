@@ -58,6 +58,9 @@
     },
     {
       "path": "../../skill/skill"
+    },
+    {
+      "path": "../../session-query/session-query"
     }
   ]
 }

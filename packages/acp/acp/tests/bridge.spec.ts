@@ -211,6 +211,67 @@ describe('automation-only ACP bridge', () => {
     ])
   })
 
+  it('forks a completed session into an independently promptable session', async () => {
+    harness = await makeBridgeHarness({ script: [textResponse('first answer'), textResponse('forked answer')] })
+    await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
+    const created = await harness.client.newSession({ cwd: process.cwd(), mcpServers: [] })
+    await harness.client.prompt({ sessionId: created.sessionId, prompt: [{ type: 'text', text: 'parent prompt' }] })
+
+    const forked = await harness.client.forkSession({
+      sessionId: created.sessionId,
+      cwd: process.cwd(),
+      mcpServers: [],
+    })
+
+    expect(forked.sessionId).not.toBe(created.sessionId)
+    expect(Array.isArray(forked.configOptions)).toBe(true)
+    // The child is live and keeps the parent's transcript.
+    await harness.client.prompt({ sessionId: forked.sessionId, prompt: [{ type: 'text', text: 'child prompt' }] })
+    expect(harness.adapter.requests[1]?.messages.map(message => message.content)).toContainEqual([
+      { type: 'text', text: 'parent prompt' },
+    ])
+    // Both Sessions are durable; listing excludes bridge-active rows by design,
+    // so read storage directly.
+    const stored = (await harness.ctx.sessionPersistence.list()).map(snapshot => snapshot.header.id)
+    expect(stored).toContain(created.sessionId)
+    expect(stored).toContain(forked.sessionId)
+  })
+
+  it('rejects a fork of a session with no completed turn and leaves no child behind', async () => {
+    harness = await makeBridgeHarness({ script: ['hang'] })
+    await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
+    const created = await harness.client.newSession({ cwd: process.cwd(), mcpServers: [] })
+    void harness.client.prompt({ sessionId: created.sessionId, prompt: [{ type: 'text', text: 'hang' }] })
+    await vi.waitFor(() => {
+      expect(harness!.ctx.agents.get(brandString<SessionId>(created.sessionId))?.status).toBe('running')
+    })
+
+    await expect(harness.client.forkSession({
+      sessionId: created.sessionId,
+      cwd: process.cwd(),
+      mcpServers: [],
+    })).rejects.toThrow(/no completed turn/i)
+    await harness.client.closeSession({ sessionId: created.sessionId })
+  })
+
+  it('rejects an unknown fork source and a cwd mismatch', async () => {
+    harness = await makeBridgeHarness({ script: [textResponse('answer')] })
+    await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
+    const created = await harness.client.newSession({ cwd: process.cwd(), mcpServers: [] })
+    await harness.client.prompt({ sessionId: created.sessionId, prompt: [{ type: 'text', text: 'answer' }] })
+
+    await expect(harness.client.forkSession({
+      sessionId: 'does-not-exist',
+      cwd: process.cwd(),
+      mcpServers: [],
+    })).rejects.toThrow(/not forkable|not found/i)
+    await expect(harness.client.forkSession({
+      sessionId: created.sessionId,
+      cwd: tmpdir(),
+      mcpServers: [],
+    })).rejects.toThrow(/cwd/i)
+  })
+
   it('materializes an empty closed session for list and resume', async () => {
     harness = await makeBridgeHarness()
     await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })

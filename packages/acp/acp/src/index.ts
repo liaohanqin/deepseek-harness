@@ -29,6 +29,8 @@ import {
   type CancelNotification,
   type CloseSessionRequest,
   type CloseSessionResponse,
+  type ForkSessionRequest,
+  type ForkSessionResponse,
   type InitializeRequest,
   type InitializeResponse,
   type ListSessionsRequest,
@@ -45,10 +47,12 @@ import {
   type SessionNotification,
   type Stream,
 } from '@agentclientprotocol/sdk'
-import type { SessionHeader, SessionId } from '@deepseek-ai/dsh-session'
+import { SessionLogOffset, type SessionHeader, type SessionId } from '@deepseek-ai/dsh-session'
+import { buildForkSeed } from '@deepseek-ai/dsh-session/fork'
 // Side-effect type import: declaration-merges the `commands/change` event observed below.
 import type {} from '@deepseek-ai/dsh-commands/types'
 import type {} from '@deepseek-ai/dsh-session-persistence'
+import { SessionQueryError, type SessionObservation } from '@deepseek-ai/dsh-session-query'
 // Side-effect type import: declaration-merges the approval waterfall answered below.
 import type {} from '@deepseek-ai/dsh-user-approval'
 // Side-effect type import: declaration-merges the optional `sessionProjectionCache`
@@ -56,6 +60,7 @@ import type {} from '@deepseek-ai/dsh-user-approval'
 import type {} from '@deepseek-ai/dsh-session-projection-cache'
 import type {} from '@deepseek-ai/dsh-session-title'
 import { supportsAcpImagePrompts } from './content.ts'
+import { latestCompletedPrefixBoundary } from './fork.ts'
 import { AcpMcpConfigError } from './mcp.ts'
 import { AcpModelConfigError } from './model-control.ts'
 import { AcpSession, type SteerRequest, type SteerResponse } from './session.ts'
@@ -86,7 +91,7 @@ const DEFAULT_SESSION_LIST_PAGE_SIZE = 100
 
 export const name = 'acp'
 /** Core services required by the standard automation controls. */
-export const inject = ['agents', 'llm', 'sessionPersistence', 'sessions']
+export const inject = ['agents', 'llm', 'sessionPersistence', 'sessionQuery', 'sessions']
 
 /** Preserve invalid-parameter detail in the SDK wire error message. */
 function invalidParams(detail: string): RequestError {
@@ -125,6 +130,7 @@ export function apply(ctx: Context, config: AcpConfig): void {
   // ACP handlers execute outside this plugin's injection scope, so capture the
   // injected service during apply rather than reading it lazily in a callback.
   const persistence = ctx.sessionPersistence
+  const sessionQuery = ctx.sessionQuery
   const logger = ctx.logger
   const sessionListPageSize = resolveSessionListPageSize(config.sessionListPageSize)
   const sessions = new Map<SessionId, AcpSession>()
@@ -294,6 +300,68 @@ export function apply(ctx: Context, config: AcpConfig): void {
       } catch (error: unknown) {
         sessions.delete(sessionId)
         await record.close('session/new activation failed')
+        throw error
+      }
+    },
+
+    async forkSession(params: ForkSessionRequest, signal: AbortSignal): Promise<ForkSessionResponse> {
+      assertOpen()
+      validateWorkspaceParams(params)
+      const sourceId = brandString<SessionId>(params.sessionId)
+      let observation: SessionObservation
+      try {
+        observation = await sessionQuery.observeSession(sourceId, { signal })
+      } catch (error: unknown) {
+        if (error instanceof SessionQueryError) throw invalidParams(`session is not forkable: ${sourceId}`)
+        throw error
+      }
+      using source = observation
+      if (source.header.origin === 'subagent') {
+        throw invalidParams(`session is not forkable: ${sourceId}`)
+      }
+      if (!await sameDirectory(source.header.cwd, params.cwd)) {
+        throw invalidParams(`session cwd does not match: ${params.cwd}`)
+      }
+      const boundary = latestCompletedPrefixBoundary(source.events)
+      if (boundary === undefined) {
+        throw invalidParams(`session "${sourceId}" has no completed turn to fork from`)
+      }
+      const seed = buildForkSeed(source.events, boundary)
+      const sessionId = brandString<SessionId>(randomUUID())
+      let record: AcpSession
+      try {
+        record = await AcpSession.fork(ctx, {
+          sessionId,
+          seed,
+          inheritedEventCount: SessionLogOffset(boundary + 1),
+          parentSource: { sessionId: sourceId, endSeq: SessionLogOffset(boundary + 1) },
+          cwd: params.cwd,
+          mcpServers: params.mcpServers ?? [],
+          agentOptions: agentOptions(config),
+          signal,
+          notify,
+        })
+      } catch (error: unknown) {
+        if (error instanceof AcpMcpConfigError) throw invalidParams(error.message)
+        throw error
+      }
+      /* v8 ignore next 4 -- a real stdio close can race an in-flight fork. */
+      if (closed) {
+        await record.close('connection closed during session/fork')
+        throw internalError('connection closed during session/fork')
+      }
+      sessions.set(sessionId, record)
+      try {
+        const configOptions = await record.configOptions(signal)
+        assertOpen()
+        // The attached log writer's flush materializes the inherited prefix durably.
+        await ctx.sessions.flush(record.agent.session)
+        assertOpen()
+        record.commandsChanged()
+        return { sessionId, configOptions }
+      } catch (error: unknown) {
+        sessions.delete(sessionId)
+        await record.close('session/fork activation failed')
         throw error
       }
     },
@@ -474,6 +542,7 @@ export function apply(ctx: Context, config: AcpConfig): void {
     .onRequest(methods.agent.session.new, ({ params, signal }) => implementation.newSession(params, signal))
     .onRequest(methods.agent.session.list, ({ params, signal }) => implementation.listSessions(params, signal))
     .onRequest(methods.agent.session.resume, ({ params, signal }) => implementation.resumeSession(params, signal))
+    .onRequest(methods.agent.session.fork, ({ params, signal }) => implementation.forkSession(params, signal))
     .onRequest(methods.agent.session.close, ({ params }) => implementation.closeSession(params))
     .onRequest(methods.agent.session.setConfigOption, ({ params, signal }) => implementation.setSessionConfigOption(params, signal))
     .onRequest(methods.agent.session.prompt, ({ params, signal }) => implementation.prompt(params, signal))
