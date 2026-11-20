@@ -16,6 +16,14 @@ import { defineContentToolFixture } from '@deepseek-ai/dsh-tool-testkit'
 import { makeBridgeHarness, textResponse, type BridgeHarness } from './harness.ts'
 import { startHttpMcpFixture } from '../../../mcp/mcp-client/tests/http-fixture.ts'
 
+/**
+ * RFC 3339 timestamp matcher.
+ *
+ * `session/list` reports activity time as text, not epoch milliseconds, so
+ * asserting the format also proves the conversion happened.
+ */
+const RFC3339 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/
+
 /** Wrap a bare header as the snapshot shape `SessionPersistence.list` now returns. */
 function snapshotOf(header: SessionHeader): SessionPersistenceSnapshot {
   return { header, revision: brandString<SessionPersistenceRevision>(`test-${header.id}`) }
@@ -148,7 +156,7 @@ describe('automation-only ACP bridge', () => {
 
     await expect(prompt).resolves.toEqual({ stopReason: 'cancelled' })
     await expect(harness.client.listSessions({})).resolves.toMatchObject({
-      sessions: [{ sessionId: created.sessionId, cwd: process.cwd(), updatedAt: expect.any(String) }],
+      sessions: [{ sessionId: created.sessionId, cwd: process.cwd(), updatedAt: expect.stringMatching(RFC3339) as string }],
     })
     await harness.client.resumeSession({ sessionId: created.sessionId, cwd: process.cwd(), mcpServers: [] })
   })
@@ -437,7 +445,7 @@ describe('automation-only ACP bridge', () => {
     await harness.client.closeSession({ sessionId: created.sessionId })
 
     await expect(harness.client.listSessions({})).resolves.toEqual({
-      sessions: [{ sessionId: created.sessionId, cwd: process.cwd(), updatedAt: expect.any(String) }],
+      sessions: [{ sessionId: created.sessionId, cwd: process.cwd(), updatedAt: expect.stringMatching(RFC3339) as string }],
     })
     await expect(harness.client.resumeSession({ sessionId: created.sessionId, cwd: process.cwd() }))
       .resolves.toHaveProperty('configOptions')
@@ -600,7 +608,7 @@ describe('automation-only ACP bridge', () => {
     // No projection cache is mounted here, so the title is omitted rather than
     // invented: the protocol marks it optional and clients supply a placeholder.
     await expect(harness.client.listSessions({})).resolves.toEqual({
-      sessions: [{ sessionId: created.sessionId, cwd: process.cwd(), updatedAt: expect.any(String) }],
+      sessions: [{ sessionId: created.sessionId, cwd: process.cwd(), updatedAt: expect.stringMatching(RFC3339) as string }],
     })
   })
 
@@ -892,7 +900,7 @@ describe('automation-only ACP bridge', () => {
       harness = await makeBridgeHarness({ persistenceRoot, script: [textResponse('after restart')] })
       await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
       await expect(harness.client.listSessions({})).resolves.toEqual({
-        sessions: [{ sessionId: created.sessionId, cwd: process.cwd(), updatedAt: expect.any(String) }],
+        sessions: [{ sessionId: created.sessionId, cwd: process.cwd(), updatedAt: expect.stringMatching(RFC3339) as string }],
       })
       await harness.client.resumeSession({ sessionId: created.sessionId, cwd: process.cwd(), mcpServers: [] })
       await expect(harness.client.prompt({
