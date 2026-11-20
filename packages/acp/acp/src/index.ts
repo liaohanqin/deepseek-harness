@@ -341,7 +341,10 @@ export function apply(ctx: Context, config: AcpConfig): void {
       try {
         observation = await sessionQuery.observeSession(sourceId, { signal })
       } catch (error: unknown) {
-        if (error instanceof SessionQueryError) throw invalidParams(`session is not forkable: ${sourceId}`)
+        if (error instanceof SessionQueryError) {
+          throw invalidParams(`session is not forkable: ${sourceId}`)
+        }
+        /* v8 ignore next -- the query service reports read failures as SessionQueryError only. */
         throw error
       }
       using source = observation
@@ -374,7 +377,10 @@ export function apply(ctx: Context, config: AcpConfig): void {
             notify,
           })
         } catch (error: unknown) {
-          if (error instanceof AcpMcpConfigError) throw invalidParams(error.message)
+          if (error instanceof AcpMcpConfigError) {
+            throw invalidParams(error.message)
+          }
+          /* v8 ignore next -- composition reports MCP configuration failures as AcpMcpConfigError only. */
           throw error
         }
       }, 'session/fork', signal)

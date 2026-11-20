@@ -11,6 +11,7 @@ import { SESSION_FORMAT_VERSION, type SessionId, SessionLogOffset, SessionSeq } 
 import type { SessionHeader } from '@deepseek-ai/dsh-session'
 import { brandString } from '@deepseek-ai/dsh-brand'
 import type { SessionPersistenceRevision, SessionPersistenceSnapshot } from '@deepseek-ai/dsh-session-persistence'
+import { SessionQueryError } from '@deepseek-ai/dsh-session-query'
 import { defineContentToolFixture } from '@deepseek-ai/dsh-tool-testkit'
 import { makeBridgeHarness, textResponse, type BridgeHarness } from './harness.ts'
 import { startHttpMcpFixture } from '../../../mcp/mcp-client/tests/http-fixture.ts'
@@ -217,10 +218,11 @@ describe('automation-only ACP bridge', () => {
     const created = await harness.client.newSession({ cwd: process.cwd(), mcpServers: [] })
     await harness.client.prompt({ sessionId: created.sessionId, prompt: [{ type: 'text', text: 'parent prompt' }] })
 
+    // Omitting `mcpServers` exercises the protocol's optional field; the child
+    // composes with none.
     const forked = await harness.client.forkSession({
       sessionId: created.sessionId,
       cwd: process.cwd(),
-      mcpServers: [],
     })
 
     expect(forked.sessionId).not.toBe(created.sessionId)
@@ -309,6 +311,109 @@ describe('automation-only ACP bridge', () => {
       cwd: tmpdir(),
       mcpServers: [],
     })).rejects.toThrow(/cwd/i)
+  })
+
+  it('rejects a fork of a subagent-origin session', async () => {
+    harness = await makeBridgeHarness()
+    await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
+    const subagent = {
+      version: SESSION_FORMAT_VERSION,
+      id: brandString<SessionId>('subagent-source'),
+      createdAt: 5,
+      isSeeded: false,
+      cwd: process.cwd(),
+      origin: 'subagent',
+    } satisfies SessionHeader
+    // The observation, not the listing, is what the fork authorizes against.
+    vi.spyOn(harness.ctx.sessionQuery, 'observeSession').mockResolvedValue({
+      source: 'prepared',
+      header: subagent,
+      inheritedEventCount: SessionLogOffset(0),
+      events: [],
+      cursor: SessionSeq(0),
+      retain: () => { throw new Error('not retained in this test') },
+      [Symbol.dispose]: () => {},
+    })
+
+    await expect(harness.client.forkSession({
+      sessionId: subagent.id,
+      cwd: process.cwd(),
+      mcpServers: [],
+    })).rejects.toThrow(/not forkable/i)
+  })
+
+  it('surfaces an unreadable fork source as invalid params rather than an internal error', async () => {
+    harness = await makeBridgeHarness({ script: [textResponse('answer')] })
+    await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
+    const created = await harness.client.newSession({ cwd: process.cwd(), mcpServers: [] })
+    await harness.client.prompt({ sessionId: created.sessionId, prompt: [{ type: 'text', text: 'answer' }] })
+    await harness.client.closeSession({ sessionId: created.sessionId })
+    // Storage corruption is the query service's to report; the bridge must map it.
+    vi.spyOn(harness.ctx.sessionQuery, 'observeSession')
+      .mockRejectedValue(new SessionQueryError('corrupt', 'SESSION_QUERY_CORRUPT_SESSION'))
+
+    let observed: Error | undefined
+    try {
+      await harness.client.forkSession({ sessionId: created.sessionId, cwd: process.cwd(), mcpServers: [] })
+    } catch (error: unknown) {
+      observed = error as Error
+    }
+    expect(observed?.message).toBe('Invalid params: session is not forkable: ' + created.sessionId)
+  })
+
+  it('propagates an observation failure that is not a query rejection', async () => {
+    harness = await makeBridgeHarness({ script: [textResponse('answer')] })
+    await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
+    const created = await harness.client.newSession({ cwd: process.cwd(), mcpServers: [] })
+    await harness.client.prompt({ sessionId: created.sessionId, prompt: [{ type: 'text', text: 'answer' }] })
+    await harness.client.closeSession({ sessionId: created.sessionId })
+    // A failure outside the query service's own error type is not a fork
+    // verdict, so it stays an internal error instead of a named rejection.
+    vi.spyOn(harness.ctx.sessionQuery, 'observeSession')
+      .mockRejectedValue(new Error('unexpected reader failure'))
+
+    await expect(harness.client.forkSession({
+      sessionId: created.sessionId,
+      cwd: process.cwd(),
+      mcpServers: [],
+    })).rejects.toThrow(/internal error/i)
+  })
+
+  it('propagates a fork composition failure that is not an MCP configuration error', async () => {
+    harness = await makeBridgeHarness({ script: [textResponse('answer')] })
+    await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
+    const created = await harness.client.newSession({ cwd: process.cwd(), mcpServers: [] })
+    await harness.client.prompt({ sessionId: created.sessionId, prompt: [{ type: 'text', text: 'answer' }] })
+    await harness.client.closeSession({ sessionId: created.sessionId })
+    vi.spyOn(harness.ctx.agents, 'create').mockRejectedValueOnce(new Error('composition exploded'))
+
+    await expect(harness.client.forkSession({
+      sessionId: created.sessionId,
+      cwd: process.cwd(),
+      mcpServers: [],
+    })).rejects.toThrow(/internal error/i)
+  })
+
+  it('rejects an invalid MCP request on a fork before composing a child', async () => {
+    harness = await makeBridgeHarness({ script: [textResponse('answer')] })
+    await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
+    const created = await harness.client.newSession({ cwd: process.cwd(), mcpServers: [] })
+    await harness.client.prompt({ sessionId: created.sessionId, prompt: [{ type: 'text', text: 'answer' }] })
+
+    let observed: Error | undefined
+    try {
+      await harness.client.forkSession({
+        sessionId: created.sessionId,
+        cwd: process.cwd(),
+        mcpServers: [
+          { type: 'http', name: 'web', url: 'https://example.test/mcp', headers: [] },
+          { type: 'http', name: 'web', url: 'https://example.test/mcp2', headers: [] },
+        ],
+      })
+    } catch (error: unknown) {
+      observed = error as Error
+    }
+    expect(observed?.message).toContain('duplicate normalized name')
   })
 
   it('reports a missing session-query backend instead of an empty fork', async () => {
@@ -588,6 +693,36 @@ describe('automation-only ACP bridge', () => {
     await expect(harness.client.listSessions({})).resolves.toEqual({
       sessions: [{ sessionId: 'blank', cwd: '/tmp/blank', updatedAt: '1970-01-01T00:00:00.005Z' }],
     })
+  })
+
+  it('orders fork-insensitive pages by activity so the cursor matches the reported time', async () => {
+    harness = await makeBridgeHarness({ config: { sessionListPageSize: 1 } })
+    await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
+    const persistence = harness.ctx.get('sessionPersistence')!
+    // Creation order and activity order disagree: `young` is newer but idle.
+    vi.spyOn(persistence, 'list').mockResolvedValue([
+      snapshotOf({ version: SESSION_FORMAT_VERSION, id: brandString<SessionId>('young'), createdAt: 9, isSeeded: false, cwd: '/tmp/young' }),
+      snapshotOf({ version: SESSION_FORMAT_VERSION, id: brandString<SessionId>('active'), createdAt: 5, isSeeded: false, cwd: '/tmp/active' }),
+    ])
+    const cache = {
+      cachedSnapshot: (header: SessionHeader) => ({
+        asOfSeq: 1,
+        values: {
+          sessionListMetadata: header.id === brandString<SessionId>('active')
+            ? { blank: false, lastPromptAt: 5000 }
+            : { blank: false, lastPromptAt: 1000 },
+        },
+      }),
+      cachedPredecessorTitle: () => undefined,
+    }
+    vi.spyOn(harness.ctx, 'get').mockImplementation(((name: string) => name === 'sessionProjectionCache' ? cache : undefined) as never)
+
+    const firstPage = await harness.client.listSessions({})
+    expect(firstPage.sessions.map(item => item.sessionId)).toEqual(['active'])
+    if (typeof firstPage.nextCursor !== 'string') throw new Error('expected a pagination cursor')
+    const secondPage = await harness.client.listSessions({ cursor: firstPage.nextCursor })
+    // The next page continues from the activity key, not from creation time.
+    expect(secondPage.sessions.map(item => item.sessionId)).toEqual(['young'])
   })
 
   it('paginates resumable sessions with an opaque deterministic cursor', async () => {

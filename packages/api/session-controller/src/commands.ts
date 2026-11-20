@@ -69,7 +69,6 @@ export function hasPromptContent(content: readonly PromptContentCandidate[]): bo
   return content.some(part => part.type !== 'text' || part.text.trim().length > 0)
 }
 
-
 /** Implements Session business commands delegated by the Session Controller Remote service. */
 export class SessionCommandController {
   /** First-insertion facts cached per exact Session; the log remains the recovery source. */

@@ -243,8 +243,10 @@ export class AcpSession {
 
   /**
    * Compose an Agent over an existing Session's inherited event prefix.
-   * The child keeps the source's transcript as a seeded prefix and records
-   * the source as its fork parent; the caller supplies the exact cut.
+   * The child keeps the source's transcript as a seeded prefix and shares that
+   * prefix with the source at the persistence layer. It records no header
+   * lineage, so an ordinary fork stays independent of its source; the caller
+   * supplies the seed and its exact cut.
    * @param ctx - ACP plugin context with Agent, LLM, and persistence services.
    * @param options - child identity, inherited seed, workspace, route, MCP, and notifier.
    * @returns the fully composed per-session module.
