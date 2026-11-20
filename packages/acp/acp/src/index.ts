@@ -139,24 +139,28 @@ export function apply(ctx: Context, config: AcpConfig): void {
   let imagePromptEnabled = false
 
   /**
-   * Read one listed Session's title from the projection cache, as a zero-I/O
-   * hint. The title projection folds the latest `session/title` event, so a
-   * record is a genuine (possibly stale) title for this Session's log.
+   * Read one listed Session's zero-I/O projection hints: its title and the time
+   * of its latest human prompt.
    *
-   * Both cached faces are tried because they are mutually exclusive: a
-   * checkpoint bound to the header's current lifecycle is served by
-   * `cachedSnapshot`, while one from a predecessor lifecycle (the log moved on
-   * to a newer format since) is served only by `cachedPredecessorTitle`.
+   * Both cached faces are tried for the title because they are mutually
+   * exclusive: a checkpoint bound to the header's current lifecycle is served
+   * by `cachedSnapshot`, while one from a predecessor lifecycle (the log moved
+   * on to a newer format since) is served only by `cachedPredecessorTitle`.
+   * `sessionListMetadata` comes only from `cachedSnapshot`, because a
+   * predecessor record exposes the title alone.
    * @param header - authoritative header of the listed Session.
-   * @returns the cached title, or `undefined` when this deployment has no
-   *   projection cache or holds no usable record for the Session.
+   * @returns the cached hints; both stay `undefined` when this deployment has
+   *   no projection cache or holds no usable record for the Session.
    */
-  const cachedSessionTitle = (header: SessionHeader): string | undefined => {
+  const cachedSessionHints = (header: SessionHeader): { title?: string; lastPromptAt?: number } => {
     const cache = ctx.get('sessionProjectionCache')
-    const snapshot = cache?.cachedSnapshot(header, ['title'])
-      ?? cache?.cachedPredecessorTitle(header)
-    const title = snapshot?.values.title
-    return typeof title === 'string' && title.length > 0 ? title : undefined
+    const current = cache?.cachedSnapshot(header, ['title', 'sessionListMetadata'])
+    const title = current?.values.title ?? cache?.cachedPredecessorTitle(header)?.values.title
+    const lastPromptAt = current?.values.sessionListMetadata?.lastPromptAt
+    return {
+      ...typeof title === 'string' && title.length > 0 ? { title } : {},
+      ...typeof lastPromptAt === 'number' ? { lastPromptAt } : {},
+    }
   }
 
   /** Return the bridge-owned record for an agent, rejecting same-id impostors. */
@@ -455,27 +459,30 @@ export function apply(ctx: Context, config: AcpConfig): void {
         if (params.cwd !== undefined && params.cwd !== null && !await sameDirectory(header.cwd, params.cwd)) {
           return undefined
         }
+        const hints = cachedSessionHints(header)
         return {
           sessionId: header.id,
           cwd: header.cwd,
-          createdAt: header.createdAt,
-          title: cachedSessionTitle(header),
+          // A Session's activity is its latest human prompt; an unused Session
+          // never advances past its creation.
+          updatedAt: Math.max(header.createdAt, hints.lastPromptAt ?? 0),
+          title: hints.title,
         }
       }))
       const entries = filtered
         .filter((entry): entry is NonNullable<typeof entry> => entry !== undefined)
-        .sort((left, right) => right.createdAt - left.createdAt || compareSessionIds(left.sessionId, right.sessionId))
+        .sort((left, right) => right.updatedAt - left.updatedAt || compareSessionIds(left.sessionId, right.sessionId))
       const remaining = cursor === undefined
         ? entries
         : entries.filter(entry => isAfterSessionListCursor(entry, cursor))
       const page = remaining.slice(0, sessionListPageSize)
       const next = remaining.length > page.length ? page.at(-1) : undefined
       return {
-        sessions: page.map(({ sessionId, cwd, createdAt, title }) => ({
+        sessions: page.map(({ sessionId, cwd, updatedAt, title }) => ({
           sessionId,
           cwd,
-          // The protocol wants RFC 3339 here, not the header's epoch millis.
-          updatedAt: new Date(createdAt).toISOString(),
+          // The protocol wants RFC 3339 here, not our epoch millis.
+          updatedAt: new Date(updatedAt).toISOString(),
           ...title === undefined ? {} : { title },
         })),
         ...next === undefined ? {} : { nextCursor: encodeSessionListCursor(next) },
@@ -626,7 +633,8 @@ function agentOptions(config: AcpConfig): { provider?: string; model?: string } 
 }
 
 interface SessionListCursor {
-  createdAt: number
+  /** The same activity time the listing reports; not the header's creation time. */
+  updatedAt: number
   sessionId: string
 }
 
@@ -647,20 +655,20 @@ function decodeSessionListCursor(value: string | null | undefined): SessionListC
   if (!/^[A-Za-z0-9_-]+$/.test(value)) throw new Error('session/list cursor is invalid')
   try {
     const decoded: unknown = JSON.parse(Buffer.from(value, 'base64url').toString('utf8'))
-    const createdAt: unknown = Array.isArray(decoded) ? decoded[0] : undefined
+    const updatedAt: unknown = Array.isArray(decoded) ? decoded[0] : undefined
     const sessionId: unknown = Array.isArray(decoded) ? decoded[1] : undefined
     if (
       !Array.isArray(decoded)
       || decoded.length !== 2
-      || typeof createdAt !== 'number'
-      || !Number.isSafeInteger(createdAt)
-      || createdAt < 0
+      || typeof updatedAt !== 'number'
+      || !Number.isSafeInteger(updatedAt)
+      || updatedAt < 0
       || typeof sessionId !== 'string'
       || sessionId.length === 0
     ) throw new Error('invalid cursor fields')
     const canonical = Buffer.from(JSON.stringify(decoded), 'utf8').toString('base64url')
     if (canonical !== value) throw new Error('non-canonical cursor')
-    return { createdAt, sessionId }
+    return { updatedAt, sessionId }
   } catch (_invalidCursor) {
     throw new Error('session/list cursor is invalid')
   }
@@ -668,13 +676,13 @@ function decodeSessionListCursor(value: string | null | undefined): SessionListC
 
 /** Encode the last returned ordering key as an opaque continuation token. */
 function encodeSessionListCursor(entry: SessionListCursor): string {
-  return Buffer.from(JSON.stringify([entry.createdAt, entry.sessionId]), 'utf8').toString('base64url')
+  return Buffer.from(JSON.stringify([entry.updatedAt, entry.sessionId]), 'utf8').toString('base64url')
 }
 
 /** Test whether an entry follows the cursor in newest-first list order. */
 function isAfterSessionListCursor(entry: SessionListCursor, cursor: SessionListCursor): boolean {
-  return entry.createdAt < cursor.createdAt
-    || (entry.createdAt === cursor.createdAt && compareSessionIds(entry.sessionId, cursor.sessionId) > 0)
+  return entry.updatedAt < cursor.updatedAt
+    || (entry.updatedAt === cursor.updatedAt && compareSessionIds(entry.sessionId, cursor.sessionId) > 0)
 }
 
 /** Compare opaque session ids by stable UTF-8 bytes, independent of process locale. */

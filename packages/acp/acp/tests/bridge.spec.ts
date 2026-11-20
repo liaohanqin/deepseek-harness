@@ -529,6 +529,49 @@ describe('automation-only ACP bridge', () => {
     })
   })
 
+  it('reports the latest human prompt time as activity, not the creation time', async () => {
+    harness = await makeBridgeHarness()
+    await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
+    const persistence = harness.ctx.get('sessionPersistence')!
+    // `old` was created first but prompted most recently; `fresh` is newer but idle.
+    const old = { version: SESSION_FORMAT_VERSION, id: brandString<SessionId>('old'), createdAt: 5, isSeeded: false, cwd: '/tmp/old' } satisfies SessionHeader
+    const fresh = { version: SESSION_FORMAT_VERSION, id: brandString<SessionId>('fresh'), createdAt: 9, isSeeded: false, cwd: '/tmp/fresh' } satisfies SessionHeader
+    vi.spyOn(persistence, 'list').mockResolvedValue([old, fresh].map(snapshotOf))
+    const cache = {
+      cachedSnapshot: (header: SessionHeader) => header.id === brandString<SessionId>('old')
+        ? { asOfSeq: 1, values: { sessionListMetadata: { blank: false, lastPromptAt: 1000 } } }
+        : { asOfSeq: 1, values: { sessionListMetadata: { blank: false, lastPromptAt: 2000 } } },
+      cachedPredecessorTitle: () => undefined,
+    }
+    vi.spyOn(harness.ctx, 'get').mockImplementation(((name: string) => name === 'sessionProjectionCache' ? cache : undefined) as never)
+
+    await expect(harness.client.listSessions({})).resolves.toEqual({
+      sessions: [
+        // Ordered by activity, so the recently prompted `old` leads `fresh`.
+        { sessionId: 'fresh', cwd: '/tmp/fresh', updatedAt: '1970-01-01T00:00:02.000Z' },
+        { sessionId: 'old', cwd: '/tmp/old', updatedAt: '1970-01-01T00:00:01.000Z' },
+      ],
+    })
+  })
+
+  it('keeps the creation time as activity when the session records no prompt', async () => {
+    harness = await makeBridgeHarness()
+    await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
+    const persistence = harness.ctx.get('sessionPersistence')!
+    vi.spyOn(persistence, 'list').mockResolvedValue([
+      snapshotOf({ version: SESSION_FORMAT_VERSION, id: brandString<SessionId>('quiet'), createdAt: 7, isSeeded: false, cwd: '/tmp/quiet' }),
+    ])
+    const cache = {
+      cachedSnapshot: () => ({ asOfSeq: 1, values: { sessionListMetadata: { blank: true, lastPromptAt: null } } }),
+      cachedPredecessorTitle: () => undefined,
+    }
+    vi.spyOn(harness.ctx, 'get').mockImplementation(((name: string) => name === 'sessionProjectionCache' ? cache : undefined) as never)
+
+    await expect(harness.client.listSessions({})).resolves.toEqual({
+      sessions: [{ sessionId: 'quiet', cwd: '/tmp/quiet', updatedAt: '1970-01-01T00:00:00.007Z' }],
+    })
+  })
+
   it('omits an empty cached title rather than reporting a blank label', async () => {
     harness = await makeBridgeHarness()
     await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
