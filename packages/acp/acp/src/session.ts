@@ -159,6 +159,17 @@ function internalError(detail: string): RequestError {
 }
 
 /**
+ * Resolve the canonical workspace spelling a new Session header records.
+ * @param ctx - ACP plugin context; a deployment without `fs` keeps the request path.
+ * @param options - workspace and cancellation requested for the session.
+ * @returns the canonical absolute workspace path.
+ */
+async function canonicalWorkspace(ctx: Context, options: AcpSessionBuildOptions): Promise<string> {
+  const fs = ctx.get('fs')
+  return fs === undefined ? options.cwd : fs.processPath(await fs.resolve(options.cwd, { signal: options.signal }))
+}
+
+/**
  * Install switch notices and mount the requested MCP clients in the unpublished Agent scope.
  * @param agentCtx - unpublished Agent scope.
  * @param options - workspace and MCP servers requested for the session.
@@ -201,8 +212,7 @@ export class AcpSession {
    */
   static async create(ctx: Context, options: CreateAcpSessionOptions): Promise<AcpSession> {
     // The header records the canonical spelling of the workspace; see SessionHeader.cwd.
-    const fs = ctx.get('fs')
-    const cwd = fs === undefined ? options.cwd : fs.processPath(await fs.resolve(options.cwd, { signal: options.signal }))
+    const cwd = await canonicalWorkspace(ctx, options)
     const handle = await ctx.agents.create({
       sessionId: options.sessionId,
       meta: { cwd },
@@ -241,8 +251,7 @@ export class AcpSession {
    */
   static async fork(ctx: Context, options: ForkAcpSessionOptions): Promise<AcpSession> {
     // The header records the canonical spelling of the workspace; see SessionHeader.cwd.
-    const fs = ctx.get('fs')
-    const cwd = fs === undefined ? options.cwd : fs.processPath(await fs.resolve(options.cwd, { signal: options.signal }))
+    const cwd = await canonicalWorkspace(ctx, options)
     const handle = await ctx.agents.create({
       sessionId: options.sessionId,
       seed: options.seed,

@@ -17,6 +17,7 @@ import { isAbsolute, resolve } from 'node:path'
 import { Readable, Writable } from 'node:stream'
 import Schema from '@deepseek-ai/schemastery'
 import { brandString } from '@deepseek-ai/dsh-brand'
+import { latestCompletedPrefixBoundary } from '@deepseek-ai/dsh-agent'
 import { errorChain } from '@deepseek-ai/dsh-llm'
 import {
   agent as createAcpAgentApp,
@@ -42,6 +43,7 @@ import {
   type RequestPermissionRequest,
   type ResumeSessionRequest,
   type ResumeSessionResponse,
+  type SessionConfigOption,
   type SetSessionConfigOptionRequest,
   type SetSessionConfigOptionResponse,
   type SessionNotification,
@@ -60,7 +62,6 @@ import type {} from '@deepseek-ai/dsh-user-approval'
 import type {} from '@deepseek-ai/dsh-session-projection-cache'
 import type {} from '@deepseek-ai/dsh-session-title'
 import { supportsAcpImagePrompts } from './content.ts'
-import { latestCompletedPrefixBoundary } from './fork.ts'
 import { AcpMcpConfigError } from './mcp.ts'
 import { AcpModelConfigError } from './model-control.ts'
 import { AcpSession, type SteerRequest, type SteerResponse } from './session.ts'
@@ -174,6 +175,46 @@ export function apply(ctx: Context, config: AcpConfig): void {
     return record
   }
 
+  /**
+   * Publish a composed Session for the rest of the bridge's lifetime.
+   *
+   * Registration happens before options are read, so a failure after that point
+   * must retract the record and close the Agent. The caller maps its own
+   * creation errors first; this helper owns only the post-composition steps.
+   * @param sessionId - identity the bridge registers and the caller returns.
+   * @param compose - builds the record; rejects on its own creation failures.
+   * @param operation - request name for close and diagnostic detail.
+   * @param signal - request cancellation.
+   * @returns the activated Session's configuration-option state.
+   */
+  const activate = async (
+    sessionId: SessionId,
+    compose: () => Promise<AcpSession>,
+    operation: string,
+    signal: AbortSignal,
+  ): Promise<SessionConfigOption[]> => {
+    const record = await compose()
+    /* v8 ignore next 4 -- a real stdio close can race an in-flight composition. */
+    if (closed) {
+      await record.close(`connection closed during ${operation}`)
+      throw internalError(`connection closed during ${operation}`)
+    }
+    sessions.set(sessionId, record)
+    try {
+      const configOptions = await record.configOptions(signal)
+      assertOpen()
+      // The attached log writer's flush materializes the Session durably.
+      await ctx.sessions.flush(record.agent.session)
+      assertOpen()
+      record.commandsChanged()
+      return configOptions
+    } catch (error: unknown) {
+      sessions.delete(sessionId)
+      await record.close(`${operation} activation failed`)
+      throw error
+    }
+  }
+
   /** Send one ordered protocol update while containing transport-only failure. */
   const notify = async (notification: SessionNotification): Promise<void> => {
     try {
@@ -268,39 +309,22 @@ export function apply(ctx: Context, config: AcpConfig): void {
       // the host plane, so this agent reads them from the global layer. A
       // deployment that configures a roster has to join one here first
       // (@deepseek-ai/dsh-agent-preset-registry README, "Composing a child agent").
-      let record: AcpSession
-      try {
-        record = await AcpSession.create(ctx, {
-          sessionId,
-          cwd: params.cwd,
-          mcpServers: params.mcpServers,
-          agentOptions: agentOptions(config),
-          signal,
-          notify,
-        })
-      } catch (error: unknown) {
-        if (error instanceof AcpMcpConfigError) throw invalidParams(error.message)
-        throw error
-      }
-      /* v8 ignore next 4 -- a real stdio close can race an in-flight create. */
-      if (closed) {
-        await record.close('connection closed during session/new')
-        throw internalError('connection closed during session/new')
-      }
-      sessions.set(sessionId, record)
-      try {
-        const configOptions = await record.configOptions(signal)
-        assertOpen()
-        // The attached log writer's flush materializes an empty session durably.
-        await ctx.sessions.flush(record.agent.session)
-        assertOpen()
-        record.commandsChanged()
-        return { sessionId, configOptions }
-      } catch (error: unknown) {
-        sessions.delete(sessionId)
-        await record.close('session/new activation failed')
-        throw error
-      }
+      const configOptions = await activate(sessionId, async () => {
+        try {
+          return await AcpSession.create(ctx, {
+            sessionId,
+            cwd: params.cwd,
+            mcpServers: params.mcpServers,
+            agentOptions: agentOptions(config),
+            signal,
+            notify,
+          })
+        } catch (error: unknown) {
+          if (error instanceof AcpMcpConfigError) throw invalidParams(error.message)
+          throw error
+        }
+      }, 'session/new', signal)
+      return { sessionId, configOptions }
     },
 
     async forkSession(params: ForkSessionRequest, signal: AbortSignal): Promise<ForkSessionResponse> {
@@ -328,43 +352,29 @@ export function apply(ctx: Context, config: AcpConfig): void {
         throw invalidParams(`session "${sourceId}" has no completed turn to fork from`)
       }
       const seed = buildForkSeed(source.events, boundary)
+      // A cold read may append in-memory repairs past the stored log, so the
+      // shared prefix must stop at what the backend actually persisted.
+      const endSeq = SessionLogOffset(Math.min(boundary + 1, source.persistedEventCount ?? boundary + 1))
       const sessionId = brandString<SessionId>(randomUUID())
-      let record: AcpSession
-      try {
-        record = await AcpSession.fork(ctx, {
-          sessionId,
-          seed,
-          inheritedEventCount: SessionLogOffset(boundary + 1),
-          parentSource: { sessionId: sourceId, endSeq: SessionLogOffset(boundary + 1) },
-          cwd: params.cwd,
-          mcpServers: params.mcpServers ?? [],
-          agentOptions: agentOptions(config),
-          signal,
-          notify,
-        })
-      } catch (error: unknown) {
-        if (error instanceof AcpMcpConfigError) throw invalidParams(error.message)
-        throw error
-      }
-      /* v8 ignore next 4 -- a real stdio close can race an in-flight fork. */
-      if (closed) {
-        await record.close('connection closed during session/fork')
-        throw internalError('connection closed during session/fork')
-      }
-      sessions.set(sessionId, record)
-      try {
-        const configOptions = await record.configOptions(signal)
-        assertOpen()
-        // The attached log writer's flush materializes the inherited prefix durably.
-        await ctx.sessions.flush(record.agent.session)
-        assertOpen()
-        record.commandsChanged()
-        return { sessionId, configOptions }
-      } catch (error: unknown) {
-        sessions.delete(sessionId)
-        await record.close('session/fork activation failed')
-        throw error
-      }
+      const configOptions = await activate(sessionId, async () => {
+        try {
+          return await AcpSession.fork(ctx, {
+            sessionId,
+            seed,
+            inheritedEventCount: SessionLogOffset(boundary + 1),
+            parentSource: { sessionId: sourceId, endSeq },
+            cwd: params.cwd,
+            mcpServers: params.mcpServers ?? [],
+            agentOptions: agentOptions(config),
+            signal,
+            notify,
+          })
+        } catch (error: unknown) {
+          if (error instanceof AcpMcpConfigError) throw invalidParams(error.message)
+          throw error
+        }
+      }, 'session/fork', signal)
+      return { sessionId, configOptions }
     },
 
     async resumeSession(params: ResumeSessionRequest, signal: AbortSignal): Promise<ResumeSessionResponse> {

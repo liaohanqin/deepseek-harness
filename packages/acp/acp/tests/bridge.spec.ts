@@ -237,6 +237,45 @@ describe('automation-only ACP bridge', () => {
     expect(stored).toContain(forked.sessionId)
   })
 
+  it('clamps the shared prefix to what the backend persisted for a cold source', async () => {
+    harness = await makeBridgeHarness({
+      script: [textResponse('answer'), textResponse('child')],
+      sqlitePersistence: true,
+    })
+    await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
+    const created = await harness.client.newSession({ cwd: process.cwd(), mcpServers: [] })
+    await harness.client.prompt({ sessionId: created.sessionId, prompt: [{ type: 'text', text: 'parent' }] })
+    await harness.client.closeSession({ sessionId: created.sessionId })
+
+    // A cold read appends in-memory repairs past the stored log, so the latest
+    // completed-turn cut can land beyond what the backend actually persisted.
+    // Sharing that cut by reference is what the backend refuses.
+    const observe = harness.ctx.sessionQuery.observeSession.bind(harness.ctx.sessionQuery)
+    vi.spyOn(harness.ctx.sessionQuery, 'observeSession').mockImplementation(async (id, opts) => {
+      const observed = await observe(id, opts)
+      const storedCount = observed.events.length
+      const repaired = [
+        ...observed.events,
+        { type: 'turn/end', seq: SessionSeq(storedCount), time: 1, data: { turn: 99, reason: { kind: 'completed' } } },
+      ]
+      return Object.assign(Object.create(observed) as typeof observed, {
+        events: repaired,
+        persistedEventCount: SessionLogOffset(storedCount),
+      })
+    })
+
+    const forked = await harness.client.forkSession({
+      sessionId: created.sessionId,
+      cwd: process.cwd(),
+      mcpServers: [],
+    })
+    // The child exists and is promptable; the clamp must not refuse the fork.
+    await expect(harness.client.prompt({
+      sessionId: forked.sessionId,
+      prompt: [{ type: 'text', text: 'child' }],
+    })).resolves.toEqual({ stopReason: 'end_turn' })
+  })
+
   it('rejects a fork of a session with no completed turn and leaves no child behind', async () => {
     harness = await makeBridgeHarness({ script: ['hang'] })
     await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })

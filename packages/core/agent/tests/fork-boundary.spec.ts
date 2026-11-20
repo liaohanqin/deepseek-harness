@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import { SessionSeq } from '@deepseek-ai/dsh-session'
-import type { SessionEvent } from '@deepseek-ai/dsh-session/types'
-import { latestCompletedPrefixBoundary } from '../src/fork.ts'
+import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import { latestCompletedPrefixBoundary } from '@deepseek-ai/dsh-agent'
 
 /**
  * Build one log entry.
  *
- * The boundary rule reads only `type`, `seq`, and `user/message`'s
- * `surfaceOp`, so a fixture builds from the discriminant it needs instead of
- * a fabricated `data` payload.
+ * The rule reads only `type`, `seq`, and a message's `surfaceOp`, so a fixture
+ * places the discriminant it needs and leaves the payload to the shape the
+ * rule never inspects.
  * @param type - event discriminant to place at this seq.
  * @param seq - contiguous position in the fixture log.
  * @param extra - fields the rule reads beyond the discriminant.

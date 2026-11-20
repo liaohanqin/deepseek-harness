@@ -7,6 +7,7 @@ import { modelAvailable } from './catalog.ts'
 import { randomUUID } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import { brandString } from '@deepseek-ai/dsh-brand'
+import { latestCompletedPrefixBoundary } from '@deepseek-ai/dsh-agent'
 import type { Agent, ModelSelection as AgentModelSelection } from '@deepseek-ai/dsh-agent'
 import { AttachmentError } from '@deepseek-ai/dsh-attachment'
 import type {
@@ -20,7 +21,7 @@ import {
 import type { MessageId, MessageSource } from '@deepseek-ai/dsh-llm'
 import { buildForkSeed } from '@deepseek-ai/dsh-session/fork'
 import { SessionLogOffset, SessionSeq } from '@deepseek-ai/dsh-session'
-import type { Session, SessionEvent, SessionHeader, SessionId, UserMessage } from '@deepseek-ai/dsh-session'
+import type { Session, SessionHeader, SessionId, UserMessage } from '@deepseek-ai/dsh-session'
 import { SessionQueryError, type SessionObservation } from '@deepseek-ai/dsh-session-query'
 import { SessionTitleInvalidError } from '@deepseek-ai/dsh-session-title'
 import { assertNever } from '@deepseek-ai/dsh-util-values'
@@ -68,21 +69,6 @@ export function hasPromptContent(content: readonly PromptContentCandidate[]): bo
   return content.some(part => part.type !== 'text' || part.text.trim().length > 0)
 }
 
-/**
- * Resolve the omitted-`atSeq` default to the latest completed-turn prefix,
- * including standalone events before the next turn begins.
- */
-function latestCompletedPrefixBoundary(events: readonly SessionEvent[]): SessionSeq | undefined {
-  const lastTurnEnd = events.findLast(event => event.type === 'turn/end')
-  if (lastTurnEnd === undefined) return undefined
-  let boundary = lastTurnEnd.seq
-  for (const next of events.slice(boundary + 1)) {
-    if (next.type === 'turn/start' || (next.type === 'user/message' && next.surfaceOp === 'append')
-      || next.type === 'agent/inbox/spliced') break
-    boundary = next.seq
-  }
-  return boundary
-}
 
 /** Implements Session business commands delegated by the Session Controller Remote service. */
 export class SessionCommandController {

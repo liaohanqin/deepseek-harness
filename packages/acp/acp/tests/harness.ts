@@ -28,6 +28,7 @@ import { type GenerateOptions, LlmAdapter, type ReasoningEffortId, type LlmResol
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
 import * as JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
+import * as SqliteSessionPersistence from '@deepseek-ai/dsh-session-persistence-sqlite'
 import SessionQuerySqlite from '@deepseek-ai/dsh-session-query-sqlite'
 import TokenMeter from '@deepseek-ai/dsh-token-meter'
 import * as AcpPlugin from '../src/index.ts'
@@ -248,13 +249,18 @@ export async function makeBridgeHarness(options: {
   persistenceRoot?: string
   /** Omit the session-query backend to exercise deployments that do not mount it. */
   sessionQuery?: boolean
+  /** Use the SQLite backend, whose fork shares the parent prefix by reference. */
+  sqlitePersistence?: boolean
 } = {}): Promise<BridgeHarness> {
   const adapter = new MockAdapter(options.script ?? [], options.imageCapable === true)
   const ctx = new Context()
   const ownsPersistenceRoot = options.persistenceRoot === undefined
   const persistenceRoot = options.persistenceRoot ?? await mkdtemp(join(tmpdir(), 'dsh-acp-test-'))
   await mountAgentLoopTestDependencies(ctx, { systemPrompt: { personaPrefix: options.persona ?? '' } })
-  await ctx.plugin(JsonlSessionPersistence, { root: persistenceRoot, compression: 'none' })
+  await ctx.plugin(
+    options.sqlitePersistence === true ? SqliteSessionPersistence : JsonlSessionPersistence,
+    { root: persistenceRoot, compression: 'none' },
+  )
   // The shipped base bundle mounts this backend with `openAt: never`; fork
   // reads sessions through `ctx.sessionQuery.observeSession`.
   if (options.sessionQuery !== false) {
